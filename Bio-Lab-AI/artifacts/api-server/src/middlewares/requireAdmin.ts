@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
-import { getRequestUserEmail } from "../lib/requestUser";
+import { getRequestUserEmail, getRequestUserId } from "../lib/requestUser";
 import { isDemoMode } from "../lib/runtimeConfig";
 
 const adminEmailsRaw = process.env.ADMIN_EMAILS ?? "";
@@ -21,5 +21,22 @@ export async function requireAdmin(req: Request, res: Response, next: NextFuncti
   }
 
   (req as Request & { adminEmail: string }).adminEmail = email;
+  next();
+}
+
+const TRAINING_ADMIN_USER_IDS = new Set(
+  (process.env.AI_TRAINING_ADMIN_USER_IDS ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean),
+);
+
+/** Training exports use stable Clerk user IDs, not mutable email claims. */
+export function requireTrainingAdmin(req: Request, res: Response, next: NextFunction) {
+  const userId = getRequestUserId(req);
+  if (!TRAINING_ADMIN_USER_IDS.has(userId)) {
+    res.status(403).json({ error: "Training-admin access is required." });
+    return;
+  }
   next();
 }

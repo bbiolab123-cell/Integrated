@@ -8,6 +8,7 @@ import {
   ClipboardList, Loader2, Sparkles, UploadCloud, FileText,
   Beaker, ShieldCheck, LayoutGrid, Target, BarChart3, Lightbulb, RotateCcw, History,
 } from "lucide-react";
+import { ImproveAiDialog } from "@/components/ai/ImproveAiDialog";
 
 interface StructuredProtocol {
   objective: string;
@@ -19,6 +20,7 @@ interface StructuredProtocol {
   suggested_analysis: string;
   review_notes: string[];
   changes_summary?: string[];
+  ai_request_id?: string;
 }
 
 function parseProtocol(raw: string | null): StructuredProtocol | null {
@@ -41,10 +43,12 @@ function parseProtocol(raw: string | null): StructuredProtocol | null {
 export function ProtocolCard({
   experimentId,
   protocolJson,
+  protocolRequestId,
   onUpdated,
 }: {
   experimentId: number;
   protocolJson: string | null;
+  protocolRequestId?: string | null;
   onUpdated: () => void;
 }) {
   const { toast } = useToast();
@@ -58,6 +62,7 @@ export function ProtocolCard({
   // scientist can tell whether their note took effect instead of re-reading the
   // whole protocol to spot it themselves.
   const [lastChanges, setLastChanges] = useState<string[] | null>(null);
+  const [latestRequestId, setLatestRequestId] = useState<string | null>(protocolRequestId ?? null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // MVP progress tracking: manual checkboxes per step, persisted locally. The
@@ -80,6 +85,7 @@ export function ProtocolCard({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [experimentId, protocolJson]);
+  useEffect(() => setLatestRequestId(protocolRequestId ?? null), [protocolRequestId]);
   const toggleStep = (i: number) => {
     setChecked((prev) => {
       const next = { ...prev, [i]: !prev[i] };
@@ -114,6 +120,7 @@ export function ProtocolCard({
       if (wasRefine) {
         setLastChanges(data?.changes_summary ?? []);
       }
+      setLatestRequestId(data?.ai_request_id ?? null);
       toast({ title: protocol ? "Protocol refined" : "Protocol generated", description: "Review the steps and AI suggestions below." });
       setRefineNote("");
       setShowRefine(false);
@@ -152,6 +159,8 @@ export function ProtocolCard({
         const err = await resp.json().catch(() => ({ error: "Upload failed" }));
         throw new Error(err.error || "Upload failed");
       }
+      const data = await resp.json().catch(() => null) as StructuredProtocol | null;
+      setLatestRequestId(data?.ai_request_id ?? null);
       toast({ title: "SOP imported", description: "Review the structured protocol and AI suggestions below." });
       onUpdated();
     } catch (err) {
@@ -399,6 +408,12 @@ export function ProtocolCard({
           <FileText className="h-3.5 w-3.5" />
           Replace this protocol anytime with a new upload or another AI refinement above.
         </div>
+        <ImproveAiDialog
+          requestId={latestRequestId}
+          output={JSON.stringify(protocol, null, 2)}
+          taskLabel="protocol"
+          compact
+        />
       </CardContent>
     </Card>
   );

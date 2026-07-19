@@ -1,5 +1,5 @@
 // Shared structured-protocol type + parser. Used by the protocol design/upload
-// routes (experiments.ts) to produce it, and by the chat route (gemini.ts) to
+// routes (experiments.ts) to produce it, and by the provider-neutral chat route to
 // ground conversation once a protocol is finalized.
 
 export interface StructuredProtocol {

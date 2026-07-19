@@ -61,11 +61,16 @@ export interface Experiment {
   protocol_json?: string | null;
   file_name?: string | null;
   raw_data_json?: string | null;
+  control_summary_json?: string | null;
   ai_summary?: string | null;
+  ai_summary_request_id?: string | null;
   ai_next_experiments_json?: string | null;
   /** Persisted long-form Data Analysis report (markdown) from POST /:id/data-analysis */
   data_analysis_report?: string | null;
-  conversation_id?: number | null;
+  data_analysis_request_id?: string | null;
+  protocol_ai_request_id?: string | null;
+  conversation_id?: number;
+  request_id?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -165,40 +170,77 @@ export interface DashboardStats {
   assay_type_breakdown: DashboardStatsAssayTypeBreakdownItem[];
 }
 
-export interface GeminiConversation {
+export interface AiConversation {
   id: number;
   title: string;
   experimentId?: number | null;
   createdAt: string;
 }
 
-export interface GeminiMessage {
+export interface AiMessage {
   id: number;
   conversationId: number;
   role: string;
   content: string;
   createdAt: string;
+  aiRequestId?: string | null;
 }
 
-export interface CreateGeminiConversationBody {
+export interface CreateAiConversationBody {
   title: string;
   experimentId?: number | null;
 }
 
-export interface SendGeminiMessageBody {
+export interface SendAiMessageBody {
   content: string;
 }
 
-export interface GeminiConversationWithMessages {
+export interface AiConversationWithMessages {
   id: number;
   title: string;
   experimentId?: number | null;
   createdAt: string;
-  messages: GeminiMessage[];
+  messages: AiMessage[];
 }
 
-export interface GeminiError {
+export interface AiError {
   error: string;
+}
+
+export interface AiFeedbackBody {
+  request_id: string;
+  /**
+   * @minimum 1
+   * @maximum 5
+   */
+  rating: number;
+  corrected_output: string;
+  approved_for_training: boolean;
+}
+
+export interface AiFeedbackResult {
+  ok: boolean;
+  request_id: string;
+  approved_for_training: boolean;
+}
+
+export type AiTrainingStatusCoverage = { [key: string]: number };
+
+export type AiTrainingStatusSplitCounts = {
+  train: number;
+  validation: number;
+  test: number;
+};
+
+export interface AiTrainingStatus {
+  total_generations: number;
+  approved_examples: number;
+  minimum_examples: number;
+  coverage: AiTrainingStatusCoverage;
+  missing_tasks: string[];
+  split_counts: AiTrainingStatusSplitCounts;
+  missing_splits: string[];
+  ready_for_training: boolean;
 }
 
 export type ListExperimentsParams = {
@@ -207,6 +249,6 @@ export type ListExperimentsParams = {
   search?: string;
 };
 
-export type ListGeminiConversationsParams = {
+export type ListAiConversationsParams = {
   experiment_id?: number;
 };

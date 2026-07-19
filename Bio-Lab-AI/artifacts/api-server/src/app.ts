@@ -60,7 +60,7 @@ const corsOptions = {
   origin: resolveCorsOrigin,
   methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Authorization", "Content-Type", "If-None-Match"],
-  exposedHeaders: ["RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset", "Retry-After"],
+  exposedHeaders: ["RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset", "Retry-After", "AI-Daily-Limit", "AI-Daily-Remaining"],
   maxAge: 600,
   optionsSuccessStatus: 204,
 };

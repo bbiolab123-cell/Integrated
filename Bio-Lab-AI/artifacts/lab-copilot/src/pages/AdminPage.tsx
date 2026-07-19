@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AlertTriangle, Shield, Users, Database, Ban, Flag, ClipboardList, Activity, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, Shield, Users, Database, Ban, Flag, ClipboardList, Activity, Plus, Trash2, BrainCircuit, Download } from "lucide-react";
 import { useAppUser } from "@/contexts/UserContext";
 import { LabConversation, LabMetric, LabPageHeader } from "@/components/lab/LivingLab";
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
@@ -46,6 +46,23 @@ export function AdminPage() {
     enabled: approvedEmail,
     queryFn: () => fetchJson("/api/admin/stats", { headers: { "x-user-email": effectiveEmail } }),
   });
+  const training = useQuery({
+    queryKey: ["ai-training-status", effectiveEmail],
+    enabled: approvedEmail,
+    queryFn: () => fetchJson("/api/ai/training/status", { headers: { "x-user-email": effectiveEmail } }),
+  });
+
+  const downloadTrainingData = async () => {
+    const response = await apiFetch("/api/ai/training/export", { headers: { "x-user-email": effectiveEmail } });
+    if (!response.ok) throw new Error("Training export failed");
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "biolab-ai-training.jsonl";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
 
   const suspend = useMutation({
     mutationFn: () => fetchJson("/api/admin/suspend", {
@@ -140,6 +157,34 @@ export function AdminPage() {
         <LabMetric label="Pending" value={moderation.pending_reviews} detail="Reviews awaiting action" icon={ClipboardList} accent="amber" index={4} />
         <LabMetric label="Priority alerts" value={moderation.high_priority_alerts} detail="Requires attention" icon={Ban} accent="rose" index={5} />
       </div>
+
+      <Card className="lab-panel rounded-[1.7rem]">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><BrainCircuit className="h-5 w-5 text-primary" /> Bio-Lab AI training set</CardTitle>
+          <CardDescription>Only scientist-corrected, explicitly approved examples appear in the private JSONL export.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {training.isLoading ? <Skeleton className="h-20 w-full" /> : (
+            <>
+              <div className="flex flex-wrap gap-3 text-sm">
+                <Badge variant="outline">{training.data?.approved_examples ?? 0} / 200 approved</Badge>
+                <Badge variant={training.data?.ready_for_training ? "default" : "secondary"}>
+                  {training.data?.ready_for_training ? "Ready for Colab" : "Collecting reviews"}
+                </Badge>
+                {(training.data?.missing_tasks ?? []).length > 0 && (
+                  <span className="text-muted-foreground">Missing: {(training.data.missing_tasks as string[]).join(", ")}</span>
+                )}
+                {(training.data?.missing_splits ?? []).length > 0 && (
+                  <span className="text-muted-foreground">Need project groups for: {(training.data.missing_splits as string[]).join(", ")}</span>
+                )}
+              </div>
+              <Button variant="outline" className="gap-2" onClick={() => void downloadTrainingData()} disabled={!training.data?.approved_examples}>
+                <Download className="h-4 w-4" /> Export de-identified JSONL
+              </Button>
+            </>
+          )}
+        </CardContent>
+      </Card>
 
       <Card className="lab-panel rounded-[1.7rem]">
         <CardHeader>

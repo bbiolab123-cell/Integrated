@@ -2,7 +2,7 @@
 
 ## Overview
 
-pnpm workspace monorepo using TypeScript. Full-stack AI lab assistant app ("Lab Copilot") with React+Vite frontend, Express backend, PostgreSQL, Gemini AI, and Clerk authentication.
+pnpm workspace monorepo using TypeScript. Full-stack AI lab assistant app ("Lab Copilot") with React+Vite frontend, Express backend, PostgreSQL, provider-neutral AI, and Clerk authentication.
 
 ## Stack
 
@@ -15,7 +15,7 @@ pnpm workspace monorepo using TypeScript. Full-stack AI lab assistant app ("Lab 
 - **Validation**: Zod (`zod/v4`), `drizzle-zod`
 - **API codegen**: Orval (from OpenAPI spec in `lib/api-spec/openapi.yaml`)
 - **Build**: esbuild (ESM bundle via `artifacts/api-server/build.mjs`)
-- **AI**: Gemini via `@workspace/integrations-gemini-ai` (Replit AI Integrations proxy)
+- **AI**: Cloudflare Workers AI through `@workspace/integrations-ai`; Mistral 7B base model with an optional LoRA adapter
 - **Frontend**: React + Vite, Wouter routing, TanStack Query, Recharts
 - **Auth**: Clerk (Replit-managed, `@clerk/express` on server, `@clerk/react` on client)
 
@@ -31,7 +31,7 @@ pnpm workspace monorepo using TypeScript. Full-stack AI lab assistant app ("Lab 
 - `artifacts/api-server/src/app.ts` — Express app with Clerk proxy + middleware wired in
 - `artifacts/api-server/src/middlewares/clerkProxyMiddleware.ts` — Clerk proxy (copied from skill template)
 - `artifacts/api-server/src/middlewares/requireAuth.ts` — `requireAuth` middleware using `getAuth(req)`
-- `artifacts/api-server/src/routes/` — experiments.ts, gemini.ts (all protected via `requireAuth` in routes/index.ts)
+- `artifacts/api-server/src/routes/` — experiments.ts, provider-neutral AI routes in legacy-named gemini.ts, and aiTraining.ts (all protected via `requireAuth`)
 - `artifacts/lab-copilot/src/App.tsx` — ClerkProvider setup, sign-in/sign-up pages, protected routes
 - `artifacts/lab-copilot/src/pages/LandingPage.tsx` — Public landing page (shown when signed out)
 - `artifacts/lab-copilot/src/components/layout/Layout.tsx` — Sidebar with user dropdown + sign-out
@@ -62,11 +62,12 @@ pnpm workspace monorepo using TypeScript. Full-stack AI lab assistant app ("Lab 
 
 ## AI Features
 
-- `POST /api/experiments/:id/analyze` — runs Gemini analysis, populates ai_summary + ai_next_experiments_json, creates a conversation
-- `POST /api/gemini/conversations/:id/messages` — SSE streaming chat endpoint (text/event-stream)
+- `POST /api/experiments/:id/analyze` — runs schema-validated AI analysis and stores its request ID
+- `POST /api/ai/conversations/:id/messages` — provider-neutral SSE chat endpoint (text/event-stream)
+- `POST /api/ai/feedback` — stores scientist corrections and explicit training approval
 
-## esbuild Note
+## AI training note
 
-`@google/*` is NOT in the external list in `build.mjs` so `@google/genai` gets bundled correctly. Only `@google-cloud/*` and `googleapis` are externalized.
+The 7B model is never downloaded to this Mac. Approved, de-identified examples are exported from the admin page and used by `training/biolab_lora_colab.ipynb` in a Google Colab GPU runtime.
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.

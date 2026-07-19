@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { LabConversation, LabPageHeader, LabPanel, LabSectionHeader } from "@/components/lab/LivingLab";
+import { ImproveAiDialog } from "@/components/ai/ImproveAiDialog";
 
 
 function ExperimentCard({ id }: { id: number }) {
@@ -104,6 +105,7 @@ export function ExperimentCompare() {
   const [analysis, setAnalysis] = useState<string>("");
   const [hasResult, setHasResult] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [requestId, setRequestId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const { data: allExperiments } = useListExperiments(undefined, {
@@ -123,6 +125,7 @@ export function ExperimentCompare() {
     setAnalysis("");
     setHasResult(false);
     setStreamError(null);
+    setRequestId(null);
 
     try {
       const response = await apiFetch(`/api/experiments/compare`, {
@@ -135,6 +138,11 @@ export function ExperimentCompare() {
         }),
         signal: controller.signal,
       });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error ?? "Comparison failed.");
+      }
 
       if (!response.body) throw new Error("No response body");
 
@@ -154,6 +162,7 @@ export function ExperimentCompare() {
               const data = JSON.parse(line.slice(6));
               if (data.content) setAnalysis((prev) => prev + data.content);
               if (data.done) setHasResult(true);
+              if (data.request_id) setRequestId(data.request_id);
             } catch {}
           }
         }
@@ -177,6 +186,7 @@ export function ExperimentCompare() {
     setStreamError(null);
     setQuestion("");
     setIsStreaming(false);
+    setRequestId(null);
   };
 
   const PRESET_QUESTIONS = [
@@ -359,6 +369,7 @@ export function ExperimentCompare() {
 
                     {hasResult && !isStreaming && (
                       <div className="mt-4 space-y-3">
+                        <ImproveAiDialog requestId={requestId} output={analysis} taskLabel="experiment comparison" compact />
                         <p className="text-xs text-muted-foreground font-mono">
                           Ask a follow-up question:
                         </p>

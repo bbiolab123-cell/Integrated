@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/select";
 import { ProjectChat } from "@/components/chat/ProjectChat";
 import { LabConversation, LabPageHeader, LabPanel, LabSectionHeader } from "@/components/lab/LivingLab";
+import { ImproveAiDialog } from "@/components/ai/ImproveAiDialog";
 
 interface ExperimentRef {
   id: number;
@@ -42,6 +43,7 @@ interface ProjectDetailData {
   goal: string | null;
   status: string;
   ai_summary: string | null;
+  ai_summary_request_id: string | null;
   experiments: ExperimentRef[];
 }
 
@@ -254,8 +256,11 @@ export function ProjectDetail() {
         </CardHeader>
         <CardContent className="pt-4">
           {project.ai_summary ? (
-            <div className="prose prose-sm dark:prose-invert max-w-none break-words">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{project.ai_summary}</ReactMarkdown>
+            <div className="space-y-4">
+              <div className="prose prose-sm dark:prose-invert max-w-none break-words">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{project.ai_summary}</ReactMarkdown>
+              </div>
+              <ImproveAiDialog requestId={project.ai_summary_request_id} output={project.ai_summary} taskLabel="project synthesis" compact />
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">

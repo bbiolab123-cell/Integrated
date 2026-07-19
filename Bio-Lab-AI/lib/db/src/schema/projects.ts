@@ -14,6 +14,7 @@ export const projects = pgTable("projects", {
   status: text("status").notNull().default("active"),
   // Optional AI synthesis across the project's experiments (Phase 2).
   ai_summary: text("ai_summary"),
+  ai_summary_request_id: text("ai_summary_request_id"),
   // Project-level copilot thread (Phase 2). Mirrors experiments.conversation_id.
   conversation_id: integer("conversation_id").references(() => conversations.id, { onDelete: "set null" }),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),

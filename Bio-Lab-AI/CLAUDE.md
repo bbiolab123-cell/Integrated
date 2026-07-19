@@ -4,7 +4,7 @@
 
 ## What This Is
 
-**Lab Copilot** is an AI-powered biotech lab assistant. Scientists log experiments, upload plate reader data (Synergy H1 / Gen5 Excel format), get Gemini AI analysis, chat with a per-experiment AI copilot, track tasks and comments, and compare experiments side-by-side.
+**Lab Copilot** is an AI-powered biotech lab assistant. Scientists log experiments, upload plate reader data (Synergy H1 / Gen5 Excel format), get provider-neutral AI analysis, chat with a per-experiment AI copilot, track tasks and comments, and compare experiments side-by-side.
 
 **Target user**: Bench scientist at a small biotech or academic lab using 96-well plate assays.
 
@@ -19,7 +19,7 @@
 | Backend | Express 5 (ESM), esbuild bundled |
 | Database | PostgreSQL 16 + Drizzle ORM |
 | Validation | Zod v4, drizzle-zod, Orval codegen |
-| AI | Google Gemini 2.5 Flash (streaming + JSON) |
+| AI | Provider-neutral interface; Cloudflare Workers AI + Mistral 7B (streaming + JSON) |
 | Auth | Clerk (Replit-managed proxy in dev; direct keys in prod) |
 | Node | 24 |
 
@@ -36,7 +36,7 @@ Bio-Lab-AI/
 │   │       ├── routes/
 │   │       │   ├── index.ts       # Mounts all routers; requireAuth applied here
 │   │       │   ├── experiments.ts # ALL experiment routes (CRUD, analyze, compare, templates, tasks, comments)
-│   │       │   ├── gemini.ts      # Conversation + SSE chat routes
+│   │       │   ├── gemini.ts      # Provider-neutral AI routes; filename retained for temporary aliases
 │   │       │   ├── admin.ts       # Admin-only routes
 │   │       │   └── health.ts      # /api/healthz (public)
 │   │       └── middlewares/
@@ -71,7 +71,7 @@ Bio-Lab-AI/
 │   ├── api-client-react/       # Generated TanStack Query hooks (do NOT edit manually)
 │   ├── api-zod/                # Generated Zod request validators (do NOT edit manually)
 │   ├── db/src/schema/          # Drizzle schema — edit here to change DB
-│   └── integrations-gemini-ai/ # Gemini AI client (Replit proxy in dev)
+│   └── integrations-ai/        # Provider interface + Cloudflare Workers AI client
 └── scripts/
     └── generate_synergy_h1.py  # Test data generator for Synergy H1 Excel files
 ```
@@ -113,8 +113,12 @@ Copy `.env.example` → `.env` and fill in values.
 # Database
 DATABASE_URL=<postgresql-connection-string>
 
-# Gemini AI  (https://aistudio.google.com/apikey)
-GEMINI_API_KEY=<google-gemini-api-key>
+# Cloudflare Workers AI (server-side only)
+AI_PROVIDER=cloudflare
+CLOUDFLARE_ACCOUNT_ID=<cloudflare-account-id>
+CLOUDFLARE_API_TOKEN=<cloudflare-workers-ai-token>
+CLOUDFLARE_MODEL=@cf/mistral/mistral-7b-instruct-v0.2-lora
+CLOUDFLARE_LORA_ID=
 
 # Clerk Auth  (https://dashboard.clerk.com)
 CLERK_SECRET_KEY=<clerk-secret-key>
@@ -161,13 +165,14 @@ VITE_ADMIN_EMAIL=you@example.com
 ## AI Integration Patterns
 
 ### One-shot analysis (JSON response)
-`POST /api/experiments/:id/analyze` → calls `ai.models.generateContent()` with `responseMimeType: "application/json"` → saves summary + suggestions to DB
+`POST /api/experiments/:id/analyze` → calls `generateAiJson()` with a Zod schema → saves the validated summary, suggestions, and request ID
 
 ### SSE streaming
-`POST /api/experiments/:id/data-analysis` and `POST /api/gemini/conversations/:id/messages` → use `ai.models.generateContentStream()` and write `data: {...}\n\n` chunks
+`POST /api/experiments/:id/data-analysis` and `POST /api/ai/conversations/:id/messages` → use `streamAiText()` and write `data: {...}\n\n` chunks
 
 ### Models used
-- `gemini-2.5-flash` for all analysis and chat
+- `@cf/mistral/mistral-7b-instruct-v0.2-lora` through Cloudflare Workers AI
+- optional `CLOUDFLARE_LORA_ID` after the adapter passes the release gates
 
 ---
 
@@ -176,8 +181,8 @@ VITE_ADMIN_EMAIL=you@example.com
 ### ✅ FIXED — User Isolation
 `user_id text not null` added to `experiments`, `tasks`, `experimentComments`. All queries now filter by `getAuth(req).userId`. Run `pnpm --filter @workspace/db run push` against your DB to apply the schema change.
 
-### ✅ FIXED — Gemini AI
-`lib/integrations-gemini-ai` now uses `GEMINI_API_KEY` directly via `@google/genai`. No Replit proxy required.
+### ✅ FIXED — Provider-neutral AI
+`lib/integrations-ai` implements the provider contract and Cloudflare client. `/api/gemini/*` remains only as a temporary route alias and no longer calls Gemini.
 
 ### ✅ FIXED — Clerk Auth
 `clerkProxyMiddleware` removed from `app.ts`. Using standard `clerkMiddleware()` with `CLERK_SECRET_KEY` env var. Missing Clerk keys fail closed; unauthenticated demo mode requires explicit `ENABLE_DEMO_MODE=true` and `VITE_ENABLE_DEMO_MODE=true` in local development and is refused in production.
@@ -250,7 +255,8 @@ Parsed result is stored as `raw_data_json` with `_type: "plate96"`. The `PlateHe
 2. New Railway project → "Deploy from GitHub repo"
 3. Add a **PostgreSQL plugin** — Railway auto-sets `DATABASE_URL`
 4. Set all env vars from `.env.example` in the Railway dashboard:
-   - `GEMINI_API_KEY`
+   - `AI_PROVIDER`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, and `CLOUDFLARE_MODEL`
+   - `AI_ROLLOUT_OWNER_USER_IDS` and `AI_TRAINING_ADMIN_USER_IDS`
    - `CLERK_SECRET_KEY`
    - `ADMIN_EMAILS`
 5. Railway runs `pnpm install && pnpm run build` then `node artifacts/api-server/dist/index.mjs`

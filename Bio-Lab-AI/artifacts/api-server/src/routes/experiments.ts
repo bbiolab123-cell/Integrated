@@ -7,11 +7,21 @@ import {
   ListExperimentsQueryParams,
   AnalyzeExperimentBody,
 } from "@workspace/api-zod";
-import { generateContentWithRetry, generateContentStreamWithRetry } from "../lib/aiRetry";
+import { z } from "zod";
+import {
+  aiErrorStatus,
+  buildExperimentContext,
+  buildRelatedExperimentContext,
+  generateAiJson,
+  normalizeControlSummary,
+  numericAuditNotice,
+  streamAiText,
+  type AiCallContext,
+} from "../lib/ai";
 import { analysisKnowledgeBlock, assayGuidanceBlock } from "../lib/assayKnowledge";
 import { PROTOCOL_JSON_FORMAT, parseStructuredProtocol, type StructuredProtocol } from "../lib/protocol";
 import { getRequestUserId } from "../lib/requestUser";
-import { aiRateLimiter } from "../middlewares/rateLimit";
+import { aiDailyQuota, aiRateLimiter } from "../middlewares/rateLimit";
 import { assertMaxChars } from "../lib/requestLimits";
 import ExcelJS from "exceljs";
 import mammoth from "mammoth";
@@ -27,6 +37,29 @@ const MAX_CELL_CHARS = 500;
 const MAX_CONDITION_GROUPS = 100;
 const WELL_ID_RE = /^[A-H](?:[1-9]|1[0-2])$/;
 const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
+
+const StructuredProtocolSchema = z.object({
+  objective: z.string(),
+  materials: z.array(z.string()),
+  controls: z.array(z.string()),
+  plate_layout: z.string(),
+  steps: z.array(z.string()),
+  expected_readout: z.string(),
+  suggested_analysis: z.string(),
+  review_notes: z.array(z.string()),
+  changes_summary: z.array(z.string()),
+});
+
+const ExperimentAnalysisSchema = z.object({
+  summary: z.string().min(1),
+  suggestions: z.array(z.object({
+    title: z.string().min(1),
+    variable_to_change: z.string().min(1),
+    rationale: z.string().min(1),
+    expected_outcome: z.string().min(1),
+    confidence: z.enum(["low", "medium", "high"]),
+  })).length(3),
+});
 
 class UploadInputError extends Error {
   constructor(message: string, readonly statusCode = 400) {
@@ -50,19 +83,6 @@ function writeAiStreamError(res: Response, message = "AI request failed. Please 
   }
   res.write(`data: ${JSON.stringify({ error: message })}\n\n`);
   res.end();
-}
-
-function formatWellList(value: unknown): string {
-  if (!Array.isArray(value)) return "none";
-  const wells = value
-    .map((well) => String(well).trim().toUpperCase())
-    .filter((well) => WELL_ID_RE.test(well))
-    .slice(0, 96);
-  return wells.length ? wells.join(", ") : "none";
-}
-
-function formatMetric(value: unknown): string {
-  return typeof value === "number" && Number.isFinite(value) ? String(value) : "n/a";
 }
 
 function decodeUpload(
@@ -403,8 +423,12 @@ router.post("/experiments/:id/data", async (req, res) => {
       .set({
         raw_data_json: rawDataJson,
         file_name: fileName,
+        control_summary_json: null,
         ai_summary: null,
+        ai_summary_request_id: null,
         ai_next_experiments_json: null,
+        data_analysis_report: null,
+        data_analysis_request_id: null,
         updated_at: new Date(),
       })
       .where(and(eq(experiments.id, id), eq(experiments.user_id, userId)))
@@ -421,21 +445,25 @@ router.post("/experiments/:id/data", async (req, res) => {
   }
 });
 
-// Shared call: ask Gemini to produce/refine a structured protocol (with its own
+// Shared call: ask the configured provider to produce/refine a structured protocol (with its own
 // critique) and parse the result. Used by both the AI-design and .docx-upload
 // paths so downstream storage/rendering never needs to know the source.
-async function structureProtocolWithAI(systemInstruction: string, userPrompt: string): Promise<StructuredProtocol | null> {
-  const response = await generateContentWithRetry({
-    model: "gemini-2.5-flash",
-    contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-    config: {
-      systemInstruction,
-      maxOutputTokens: 8192,
-      responseMimeType: "application/json",
-      thinkingConfig: { thinkingBudget: 0 },
-    },
-  });
-  return parseStructuredProtocol(response.text ?? "{}");
+async function structureProtocolWithAI(
+  systemInstruction: string,
+  userPrompt: string,
+  context: AiCallContext,
+): Promise<{ protocol: StructuredProtocol; requestId: string }> {
+  const response = await generateAiJson({
+    ...context,
+    systemInstruction,
+    messages: [{ role: "user", content: userPrompt }],
+    maxTokens: 4096,
+  }, StructuredProtocolSchema);
+  if (context.taskType === "sop_structuring") {
+    const auditNotice = numericAuditNotice(JSON.stringify(response.data), `${systemInstruction}\n${userPrompt}`);
+    if (auditNotice) response.data.review_notes.push(auditNotice);
+  }
+  return { protocol: response.data, requestId: response.requestId };
 }
 
 // Design-time protocol generation/refinement. Synthesizes a structured, bench-ready
@@ -444,7 +472,7 @@ async function structureProtocolWithAI(systemInstruction: string, userPrompt: st
 // quantification method. Always includes the AI's own critique (review_notes) so
 // the scientist sees suggestions rather than a black-box answer. Persists to
 // experiments.protocol_json; never changes status — the scientist finalizes manually.
-router.post("/experiments/:id/protocol/generate", aiRateLimiter, async (req, res) => {
+router.post("/experiments/:id/protocol/generate", aiRateLimiter, aiDailyQuota, async (req, res) => {
   try {
     const userId = getRequestUserId(req);
     const id = parseInt(String(req.params.id), 10);
@@ -505,10 +533,12 @@ Context from the scientist: ${exp.notes ?? "(none provided — infer reasonable 
 Respond in this exact JSON format:
 ${PROTOCOL_JSON_FORMAT}`;
 
-    const protocol = await structureProtocolWithAI(systemInstruction, userPrompt);
-    if (!protocol) {
-      return res.status(502).json({ error: "The AI returned a malformed protocol. Please try again." });
-    }
+    const { protocol, requestId } = await structureProtocolWithAI(systemInstruction, userPrompt, {
+      taskType: "protocol_generation",
+      userId,
+      experimentId: id,
+      sensitiveTerms: [exp.name, ...(exp.file_name ? [exp.file_name] : [])],
+    });
 
     // changes_summary is a one-time diff for THIS refinement, not a durable
     // protocol property — strip it before persisting so it doesn't get compared
@@ -517,13 +547,13 @@ ${PROTOCOL_JSON_FORMAT}`;
     const { changes_summary, ...protocolToPersist } = protocol;
     await db
       .update(experiments)
-      .set({ protocol_json: JSON.stringify(protocolToPersist), updated_at: new Date() })
+      .set({ protocol_json: JSON.stringify(protocolToPersist), protocol_ai_request_id: requestId, updated_at: new Date() })
       .where(and(eq(experiments.id, id), eq(experiments.user_id, userId)));
 
-    return res.json(protocol);
+    return res.json({ ...protocol, ai_request_id: requestId });
   } catch (err) {
     req.log.error({ err }, "Failed to generate protocol");
-    return res.status(500).json({ error: "Failed to generate protocol" });
+    return res.status(aiErrorStatus(err)).json({ error: "Failed to generate protocol" });
   }
 });
 
@@ -531,7 +561,7 @@ ${PROTOCOL_JSON_FORMAT}`;
 // retyped into a form). Extracts the raw text, then runs it through the SAME
 // structuring pipeline as AI-design so the result renders identically regardless
 // of source — plus the AI's critique, same as the design path.
-router.post("/experiments/:id/protocol/upload", aiRateLimiter, async (req, res) => {
+router.post("/experiments/:id/protocol/upload", aiRateLimiter, aiDailyQuota, async (req, res) => {
   try {
     const userId = getRequestUserId(req);
     const id = parseInt(String(req.params.id), 10);
@@ -571,30 +601,36 @@ ${sopText.slice(0, 20000)}
 Respond in this exact JSON format:
 ${PROTOCOL_JSON_FORMAT}`;
 
-    const protocol = await structureProtocolWithAI(systemInstruction, userPrompt);
-    if (!protocol) {
-      return res.status(502).json({ error: "The AI couldn't structure this document. Please try again." });
-    }
+    const { protocol, requestId } = await structureProtocolWithAI(systemInstruction, userPrompt, {
+      taskType: "sop_structuring",
+      userId,
+      experimentId: id,
+      sensitiveTerms: [exp.name, fileName, ...(exp.file_name ? [exp.file_name] : [])],
+    });
 
     // Note: experiments.file_name is reserved for the plate-data upload (set by
     // POST /:id/data) — deliberately not overwritten here to avoid the two
     // uploads clobbering each other's filename.
     await db
       .update(experiments)
-      .set({ protocol_json: JSON.stringify(protocol), updated_at: new Date() })
+      .set({ protocol_json: JSON.stringify(protocol), protocol_ai_request_id: requestId, updated_at: new Date() })
       .where(and(eq(experiments.id, id), eq(experiments.user_id, userId)));
 
-    return res.json(protocol);
+    return res.json({ ...protocol, ai_request_id: requestId });
   } catch (err) {
     req.log.error({ err }, "Failed to parse uploaded SOP");
     if (err instanceof UploadInputError) {
       return res.status(err.statusCode).json({ error: err.message });
     }
+    const aiStatus = aiErrorStatus(err);
+    if (aiStatus !== 500) {
+      return res.status(aiStatus).json({ error: err instanceof Error ? err.message : "AI request failed." });
+    }
     return res.status(400).json({ error: "Could not read this document. Upload a valid .docx file." });
   }
 });
 
-router.post("/experiments/:id/data-analysis", aiRateLimiter, async (req, res) => {
+router.post("/experiments/:id/data-analysis", aiRateLimiter, aiDailyQuota, async (req, res) => {
   try {
     const userId = getRequestUserId(req);
     const id = parseInt(String(req.params.id), 10);
@@ -620,6 +656,16 @@ router.post("/experiments/:id/data-analysis", aiRateLimiter, async (req, res) =>
     // this call is a refinement of it, not a fresh first-time analysis.
     const isRefine = !!exp.data_analysis_report;
 
+    const submittedControls = normalizeControlSummary(body.control_summary);
+    const effectiveControlJson = submittedControls
+      ? JSON.stringify(submittedControls)
+      : exp.control_summary_json;
+    if (submittedControls) {
+      await db.update(experiments)
+        .set({ control_summary_json: effectiveControlJson, updated_at: new Date() })
+        .where(and(eq(experiments.id, id), eq(experiments.user_id, userId)));
+    }
+
     const related = await db
       .select()
       .from(experiments)
@@ -627,17 +673,13 @@ router.post("/experiments/:id/data-analysis", aiRateLimiter, async (req, res) =>
       .orderBy(desc(experiments.created_at))
       .limit(3);
 
-    let plateSummary: Record<string, unknown> | null = null;
-    if (exp.raw_data_json) {
-      try { plateSummary = JSON.parse(exp.raw_data_json); } catch {}
-    }
-
-    const plateSummaryText = plateSummary
-      ? JSON.stringify(plateSummary, null, 2).substring(0, 3000)
-      : "No quantitative plate summary available for this experiment.";
-
+    const sensitiveTerms = [exp.name, ...related.map((experiment) => experiment.name), ...(exp.file_name ? [exp.file_name] : [])];
+    const currentContext = buildExperimentContext(
+      { ...exp, control_summary_json: effectiveControlJson },
+      { includePreviousReport: isRefine, sensitiveTerms },
+    );
     const relatedContext = related.length > 0
-      ? related.map((r) => `- ${r.name} (${r.date}, ${r.assay_type}, ${r.instrument}, status: ${r.status}${r.ai_summary ? `, summary: ${r.ai_summary.substring(0, 200)}` : ""})`).join("\n")
+      ? buildRelatedExperimentContext(related, sensitiveTerms, { includeData: false })
       : "None";
 
     const assayGuidance = analysisKnowledgeBlock(`${exp.assay_type} ${exp.notes ?? ""}`);
@@ -658,7 +700,8 @@ Your job is to:
 - and recommend 3 concrete next experiments to run.
 
 Always:
-- cite numeric data explicitly (e.g., "control mean 0.985, CV 5.1%", "1.0 µM caused ~72% drop vs control"),
+- cite numeric data explicitly from the supplied context,
+- mark every newly calculated number as "derived" and state the calculation,
 - distinguish between strong evidence and speculation,
 - and keep recommendations practical for a small biotech lab.
 ${notes ? `\nADDITIONAL CONTEXT from the scientist (beyond what's already in the experiment's protocol/notes): ${notes}\n` : ""}${quantifyRequest ? `\nWHAT THE SCIENTIST SPECIFICALLY WANTS QUANTIFIED: ${quantifyRequest}. Make this the centerpiece of section 3 (Dose-Response or Pattern Analysis) — compute exactly this using the correct method for the assay, not a generic summary.\n` : ""}
@@ -672,55 +715,34 @@ Respond in structured markdown with these exact sections:
 ## 7. Confidence and Limitations${isRefine ? "\n## 8. What Changed From the Previous Report" : ""}`;
 
     const userPrompt = isRefine
-      ? `Refine the existing report below based on the scientist's note. Keep any sections that still hold; update what the note asks for, and re-check everything against the current data.
+      ? `Refine the existing provider report using the scientist's note and re-check every claim against the complete context.
 
-**PREVIOUS REPORT:**
-${(exp.data_analysis_report ?? "").slice(0, 6000)}
+SCIENTIST'S REFINEMENT NOTE: ${refineNote || "(none — re-review and tighten the previous report against the data)"}
 
-**SCIENTIST'S REFINEMENT NOTE:** ${refineNote || "(none — just re-review and tighten the previous report against the data)"}
+COMPLETE EXPERIMENT CONTEXT (including the previous report when it was generated by this provider):
+${currentContext}
 
-**Experiment Metadata:**
-- Name: ${exp.name}
-- Date: ${exp.date}
-- Assay Type: ${exp.assay_type}
-- Instrument: ${exp.instrument}
-- Status: ${exp.status}
-- Notes: ${exp.notes ?? "None"}
+Produce the FULL updated report, ending with section 8 summarizing what changed. If nothing substantive changed, say so.`
+      : `Analyze this experiment and produce the structured report.
 
-**Quantitative Summary (plate_summary_json):**
-\`\`\`json
-${plateSummaryText}
-\`\`\`
+COMPLETE EXPERIMENT CONTEXT:
+${currentContext}
 
-Produce the FULL updated report (not just a diff), ending with section 8 summarizing what actually changed vs. the previous report — if nothing substantive changed, say so.`
-      : `Please analyze this experiment's data and produce a structured report.
-
-**Experiment Metadata:**
-- Name: ${exp.name}
-- Date: ${exp.date}
-- Assay Type: ${exp.assay_type}
-- Instrument: ${exp.instrument}
-- Status: ${exp.status}
-- Notes: ${exp.notes ?? "None"}
-
-**Quantitative Summary (plate_summary_json):**
-\`\`\`json
-${plateSummaryText}
-\`\`\`
-
-**Related Experiments (same assay type):**
+RELATED EXPERIMENTS (same assay type, metadata only):
 ${relatedContext}`;
 
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
-    const stream = await generateContentStreamWithRetry({
-      model: "gemini-2.5-flash",
-      contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-      // Without thinkingBudget:0, gemini-2.5-flash can spend the whole output
-      // budget "thinking" and stream zero text. Disable it for this prose stream.
-      config: { systemInstruction: systemPrompt, maxOutputTokens: 8192, thinkingConfig: { thinkingBudget: 0 } },
+    const stream = await streamAiText({
+      taskType: "data_analysis",
+      userId,
+      experimentId: id,
+      systemInstruction: systemPrompt,
+      messages: [{ role: "user", content: userPrompt }],
+      maxTokens: 6144,
+      sensitiveTerms,
     });
 
     let streamed = "";
@@ -733,13 +755,19 @@ ${relatedContext}`;
     }
 
     if (streamed.trim()) {
+      const auditNotice = numericAuditNotice(streamed, `${systemPrompt}\n${userPrompt}`);
+      if (auditNotice) {
+        const warning = `\n\n> **Numeric verification notice:** ${auditNotice}`;
+        streamed += warning;
+        res.write(`data: ${JSON.stringify({ content: warning, warning: auditNotice })}\n\n`);
+      }
       // Persist so the report survives a refresh, can be refined next time, and
       // can ground follow-up chat questions.
       await db
         .update(experiments)
-        .set({ data_analysis_report: streamed, updated_at: new Date() })
+        .set({ data_analysis_report: streamed, data_analysis_request_id: stream.requestId, updated_at: new Date() })
         .where(and(eq(experiments.id, id), eq(experiments.user_id, userId)));
-      res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+      res.write(`data: ${JSON.stringify({ done: true, request_id: stream.requestId })}\n\n`);
     } else {
       res.write(`data: ${JSON.stringify({ error: "The AI returned an empty report (it may be rate-limited). Please try again." })}\n\n`);
     }
@@ -1175,7 +1203,7 @@ router.delete("/tasks/:id", async (req, res) => {
   return res.status(204).send();
 });
 
-router.post("/experiments/:id/analyze", aiRateLimiter, async (req, res) => {
+router.post("/experiments/:id/analyze", aiRateLimiter, aiDailyQuota, async (req, res) => {
   try {
     const userId = getRequestUserId(req);
     const id = parseInt(String(req.params.id), 10);
@@ -1197,14 +1225,6 @@ router.post("/experiments/:id/analyze", aiRateLimiter, async (req, res) => {
       .orderBy(desc(experiments.created_at))
       .limit(3);
 
-    const dataContext = exp.raw_data_json
-      ? `\nParsed data (full plate): ${exp.raw_data_json.substring(0, 12000)}`
-      : "\nNo file data uploaded.";
-
-    const relatedContext = related.length > 0
-      ? `\nRelated experiments:\n${related.map((r) => `- ${r.name} (${r.date}, status: ${r.status})`).join("\n")}`
-      : "\nNo related experiments found.";
-
     let focusQuestion = "";
     try {
       focusQuestion = bodyParsed.focus_question ? assertMaxChars(bodyParsed.focus_question, "Focus question") : "";
@@ -1219,14 +1239,24 @@ router.post("/experiments/:id/analyze", aiRateLimiter, async (req, res) => {
     const cs = (req.body && typeof req.body === "object")
       ? (req.body as Record<string, unknown>).control_summary as Record<string, unknown> | undefined
       : undefined;
-    const controlsBlock = cs
-      ? `\n\nUSER-DESIGNATED CONTROLS (ground truth from the scientist's plate layout — use these EXACT wells for normalization and Z'; do NOT guess which wells are controls):
-- Positive control wells: ${formatWellList(cs.positive_control_wells)}
-- Negative control wells: ${formatWellList(cs.negative_control_wells)}
-- Blank wells: ${formatWellList(cs.blank_wells)}
-- Already computed from these controls: mean(+)=${formatMetric(cs.mean_positive)}, mean(−)=${formatMetric(cs.mean_negative)}, Z'=${formatMetric(cs.zprime)}, signal:background=${formatMetric(cs.signal_to_background)}.
-Normalize sample wells to % of control using these control means, and report this Z' as the plate-quality metric.`
-      : "";
+    const normalizedControls = normalizeControlSummary(cs) ?? normalizeControlSummary(
+      exp.control_summary_json ? (() => { try { return JSON.parse(exp.control_summary_json); } catch { return null; } })() : null,
+    );
+    const effectiveControlJson = normalizedControls ? JSON.stringify(normalizedControls) : exp.control_summary_json;
+    if (normalizedControls && cs) {
+      await db.update(experiments)
+        .set({ control_summary_json: effectiveControlJson, updated_at: new Date() })
+        .where(and(eq(experiments.id, id), eq(experiments.user_id, userId)));
+    }
+
+    const sensitiveTerms = [exp.name, ...related.map((experiment) => experiment.name), ...(exp.file_name ? [exp.file_name] : [])];
+    const experimentContext = buildExperimentContext(
+      { ...exp, control_summary_json: effectiveControlJson },
+      { sensitiveTerms },
+    );
+    const relatedContext = related.length > 0
+      ? buildRelatedExperimentContext(related, sensitiveTerms, { includeData: false })
+      : "No related experiments found.";
 
     const isPlateReaderExp = (exp.instrument?.toLowerCase().includes("synergy") ||
       exp.assay_type?.toLowerCase().includes("plate reader") ||
@@ -1243,7 +1273,7 @@ ${assayGuidance}
 
 Your analysis MUST cover, in this order:
 1. Intent & expectation — in 1–2 sentences, restate what the experiment set out to test (from the protocol/notes) and the result you'd expect if it succeeded.
-2. Quantitative readout — compute the assay-appropriate metric using the method above, with HARD NUMBERS and specific well IDs/values (e.g. % viability range, IC50/EC50 with the assumed dose axis, interpolated concentration with R², or fold-change). State the assumptions you made (dose axis, which wells are controls).
+2. Quantitative readout — compute the assay-appropriate metric using the method above, with numbers and specific well IDs/values. Label every number not directly present in the context as "derived" and state the calculation. State the assumptions you made (dose axis, which wells are controls).
 3. Plate QC — replicate CV%, outlier wells (cite IDs + values), signal-to-background, edge effects (peripheral vs inner wells), and the Z'-factor if positive/negative controls are identifiable (Z' ≥ 0.5 excellent, 0–0.5 marginal, < 0 fail).
 4. Verdict — do the results match the expectation? If YES, confirm and give your confidence. If NO, diagnose the most likely cause and rank possibilities: technical (edge-well evaporation, high CV, vehicle toxicity, missing blank subtraction, saturated/floored signal, dead controls) vs biological (compound inactive, dose range wrong, weak effect). Be concrete about which wells/numbers led you there.
 
@@ -1252,12 +1282,11 @@ Write the summary as clean markdown with short bold section headers. Lead with t
 
     const userPrompt = `Review this experiment like a scientist: understand its intent from the protocol/notes, state what you'd expect, quantify what actually happened, and give a verdict with diagnosis. Then propose exactly 3 next experiments.
 
-Experiment: ${exp.name}
-Date: ${exp.date}
-Assay type: ${exp.assay_type}
-Instrument: ${exp.instrument}
-Status: ${exp.status}
-Protocol / notes: ${exp.notes ?? "None provided — infer the assay and intent from the assay type and data."}${dataContext}${relatedContext}${focusNote}${controlsBlock}
+COMPLETE EXPERIMENT CONTEXT (full plate, deterministic controls, protocol, notes, and metadata):
+${experimentContext}
+
+RELATED EXPERIMENTS (metadata only):
+${relatedContext}${focusNote}
 
 Respond in this exact JSON format:
 {
@@ -1273,31 +1302,18 @@ Respond in this exact JSON format:
   ]
 }`;
 
-    const response = await generateContentWithRetry({
-      model: "gemini-2.5-flash",
-      contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-      config: {
-        systemInstruction: systemPrompt,
-        maxOutputTokens: 8192,
-        responseMimeType: "application/json",
-        // gemini-2.5-flash spends "thinking" tokens out of the output budget,
-        // which truncated the JSON answer mid-response. Disable thinking so the
-        // full structured response is returned and parses cleanly.
-        thinkingConfig: { thinkingBudget: 0 },
-      },
-    });
-
-    const text = response.text ?? "{}";
-    let parsed: { summary: string; suggestions: unknown[] };
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      // Salvage the summary from a truncated/partial JSON response so the UI
-      // shows clean prose instead of raw JSON braces.
-      const m = text.match(/"summary"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-      const salvaged = m ? m[1].replace(/\\n/g, "\n").replace(/\\"/g, '"') : text;
-      parsed = { summary: salvaged, suggestions: [] };
-    }
+    const response = await generateAiJson({
+      taskType: "experiment_analysis",
+      userId,
+      experimentId: id,
+      systemInstruction: systemPrompt,
+      messages: [{ role: "user", content: userPrompt }],
+      maxTokens: 4096,
+      sensitiveTerms,
+    }, ExperimentAnalysisSchema);
+    const parsed = response.data;
+    const auditNotice = numericAuditNotice(parsed.summary, `${systemPrompt}\n${userPrompt}`);
+    if (auditNotice) parsed.summary += `\n\n> **Numeric verification notice:** ${auditNotice}`;
 
     // Create a conversation for this experiment if it doesn't have one
     let convId = exp.conversation_id;
@@ -1318,6 +1334,7 @@ Respond in this exact JSON format:
       .update(experiments)
       .set({
         ai_summary: parsed.summary,
+        ai_summary_request_id: response.requestId,
         ai_next_experiments_json: JSON.stringify(parsed.suggestions),
         updated_at: new Date(),
       })
@@ -1328,20 +1345,22 @@ Respond in this exact JSON format:
       conversationId: convId,
       role: "assistant",
       content: `**Analysis Summary**\n\n${parsed.summary}`,
+      aiRequestId: response.requestId,
     });
 
     return res.json({
       ai_summary: parsed.summary,
       suggestions: parsed.suggestions,
       conversation_id: convId,
+      request_id: response.requestId,
     });
   } catch (err) {
     req.log.error({ err }, "Failed to analyze experiment");
-    return res.status(500).json({ error: "Failed to analyze experiment" });
+    return res.status(aiErrorStatus(err)).json({ error: "Failed to analyze experiment" });
   }
 });
 
-router.post("/experiments/compare", aiRateLimiter, async (req, res) => {
+router.post("/experiments/compare", aiRateLimiter, aiDailyQuota, async (req, res) => {
   try {
     const userId = getRequestUserId(req);
     const { experiment_a_id, experiment_b_id, question } = req.body as {
@@ -1372,10 +1391,9 @@ router.post("/experiments/compare", aiRateLimiter, async (req, res) => {
     const a = rowsA[0];
     const b = rowsB[0];
 
-    const formatExp = (e: typeof a, label: string) =>
-      `=== ${label}: ${e.name} ===
-Date: ${e.date} | Assay: ${e.assay_type} | Instrument: ${e.instrument} | Status: ${e.status}
-Notes: ${e.notes ?? "None"}${e.ai_summary ? `\nPrevious AI analysis: ${e.ai_summary}` : ""}${e.raw_data_json ? `\nData: ${e.raw_data_json.substring(0, 800)}` : ""}`;
+    const sensitiveTerms = [a.name, b.name, ...(a.file_name ? [a.file_name] : []), ...(b.file_name ? [b.file_name] : [])];
+    const formatExp = (experiment: typeof a, label: string) =>
+      `=== ${label} ===\n${buildExperimentContext(experiment, { sensitiveTerms })}`;
 
     const userPrompt = safeQuestion
       ? `The scientist asks: "${safeQuestion}"\n\nPlease answer using the two experiments below as context.\n\n${formatExp(a, "Experiment A")}\n\n${formatExp(b, "Experiment B")}`
@@ -1385,15 +1403,14 @@ Notes: ${e.notes ?? "None"}${e.ai_summary ? `\nPrevious AI analysis: ${e.ai_summ
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
-    const stream = await generateContentStreamWithRetry({
-      model: "gemini-2.5-flash",
-      contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-      config: {
-        systemInstruction: `You are an expert lab scientist AI copilot specializing in comparative experiment analysis. You identify root causes of success or failure by carefully examining differences between experimental runs. Be specific, cite numbers, and give actionable conclusions.`,
-        maxOutputTokens: 8192,
-        // Disable thinking so 2.5-flash doesn't stream an empty comparison.
-        thinkingConfig: { thinkingBudget: 0 },
-      },
+    const comparisonSystemPrompt = `You are an expert lab scientist specializing in comparative experiment analysis. Identify root causes of success or failure from differences between runs. Cite only numbers present in the supplied contexts; mark calculations as derived. Give actionable conclusions.`;
+    const stream = await streamAiText({
+      taskType: "experiment_comparison",
+      userId,
+      systemInstruction: comparisonSystemPrompt,
+      messages: [{ role: "user", content: userPrompt }],
+      maxTokens: 4096,
+      sensitiveTerms,
     });
 
     let streamed = "";
@@ -1406,7 +1423,12 @@ Notes: ${e.notes ?? "None"}${e.ai_summary ? `\nPrevious AI analysis: ${e.ai_summ
     }
 
     if (streamed.trim()) {
-      res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+      const auditNotice = numericAuditNotice(streamed, `${comparisonSystemPrompt}\n${userPrompt}`);
+      if (auditNotice) {
+        const warning = `\n\n> **Numeric verification notice:** ${auditNotice}`;
+        res.write(`data: ${JSON.stringify({ content: warning, warning: auditNotice })}\n\n`);
+      }
+      res.write(`data: ${JSON.stringify({ done: true, request_id: stream.requestId })}\n\n`);
     } else {
       res.write(`data: ${JSON.stringify({ error: "The AI returned an empty comparison (it may be rate-limited). Please try again." })}\n\n`);
     }

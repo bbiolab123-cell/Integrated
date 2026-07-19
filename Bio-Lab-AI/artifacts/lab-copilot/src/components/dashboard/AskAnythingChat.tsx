@@ -7,6 +7,7 @@ import { AlertCircle, Send, Sparkles } from "lucide-react";
 import { motion } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { ImproveAiDialog } from "@/components/ai/ImproveAiDialog";
 
 const SYSTEM_PROMPT = "You are an expert biotech and cell biology advisor. Answer general scientific questions, explain concepts, help with protocol design, and discuss biotech topics. Be concise and scientific.";
 
@@ -15,6 +16,7 @@ export function AskAnythingChat() {
   const [response, setResponse] = useState("");
   const [error, setError] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
+  const [requestId, setRequestId] = useState<string | null>(null);
 
   const sendMessage = async () => {
     const content = message.trim();
@@ -23,9 +25,10 @@ export function AskAnythingChat() {
     setIsStreaming(true);
     setResponse("");
     setError("");
+    setRequestId(null);
 
     try {
-      const res = await apiFetch("/api/gemini/general-chat", {
+      const res = await apiFetch("/api/ai/general-chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: content, systemPrompt: SYSTEM_PROMPT }),
@@ -52,6 +55,7 @@ export function AskAnythingChat() {
             const data = JSON.parse(line.slice(6));
             if (data.content) setResponse((prev) => prev + data.content);
             if (data.error) setError(data.error);
+            if (data.request_id) setRequestId(data.request_id);
           }
         }
       }
@@ -113,6 +117,7 @@ export function AskAnythingChat() {
                   transition={{ repeat: Infinity, duration: 0.6 }}
                 />
               )}
+              {!isStreaming && <div className="mt-4"><ImproveAiDialog requestId={requestId} output={response} taskLabel="general answer" compact /></div>}
             </>
           )}
         </div>

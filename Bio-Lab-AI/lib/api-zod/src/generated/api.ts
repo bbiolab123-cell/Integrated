@@ -143,7 +143,9 @@ export const GetExperimentResponse = zod.object({
     ),
   file_name: zod.string().nullish(),
   raw_data_json: zod.string().nullish(),
+  control_summary_json: zod.string().nullish(),
   ai_summary: zod.string().nullish(),
+  ai_summary_request_id: zod.string().nullish(),
   ai_next_experiments_json: zod.string().nullish(),
   data_analysis_report: zod
     .string()
@@ -151,7 +153,10 @@ export const GetExperimentResponse = zod.object({
     .describe(
       "Persisted long-form Data Analysis report (markdown) from POST \/:id\/data-analysis",
     ),
-  conversation_id: zod.number().nullish(),
+  data_analysis_request_id: zod.string().nullish(),
+  protocol_ai_request_id: zod.string().nullish(),
+  conversation_id: zod.number().optional(),
+  request_id: zod.string().uuid().nullish(),
   created_at: zod.coerce.date(),
   updated_at: zod.coerce.date(),
 });
@@ -206,7 +211,9 @@ export const UpdateExperimentResponse = zod.object({
     ),
   file_name: zod.string().nullish(),
   raw_data_json: zod.string().nullish(),
+  control_summary_json: zod.string().nullish(),
   ai_summary: zod.string().nullish(),
+  ai_summary_request_id: zod.string().nullish(),
   ai_next_experiments_json: zod.string().nullish(),
   data_analysis_report: zod
     .string()
@@ -214,7 +221,10 @@ export const UpdateExperimentResponse = zod.object({
     .describe(
       "Persisted long-form Data Analysis report (markdown) from POST \/:id\/data-analysis",
     ),
-  conversation_id: zod.number().nullish(),
+  data_analysis_request_id: zod.string().nullish(),
+  protocol_ai_request_id: zod.string().nullish(),
+  conversation_id: zod.number().optional(),
+  request_id: zod.string().uuid().nullish(),
   created_at: zod.coerce.date(),
   updated_at: zod.coerce.date(),
 });
@@ -264,24 +274,24 @@ export const AnalyzeExperimentResponse = zod.object({
 /**
  * @summary List all conversations
  */
-export const ListGeminiConversationsQueryParams = zod.object({
+export const ListAiConversationsQueryParams = zod.object({
   experiment_id: zod.coerce.number().optional(),
 });
 
-export const ListGeminiConversationsResponseItem = zod.object({
+export const ListAiConversationsResponseItem = zod.object({
   id: zod.number(),
   title: zod.string(),
   experimentId: zod.number().nullish(),
   createdAt: zod.coerce.date(),
 });
-export const ListGeminiConversationsResponse = zod.array(
-  ListGeminiConversationsResponseItem,
+export const ListAiConversationsResponse = zod.array(
+  ListAiConversationsResponseItem,
 );
 
 /**
  * @summary Create a new conversation
  */
-export const CreateGeminiConversationBody = zod.object({
+export const CreateAiConversationBody = zod.object({
   title: zod.string(),
   experimentId: zod.number().nullish(),
 });
@@ -289,11 +299,11 @@ export const CreateGeminiConversationBody = zod.object({
 /**
  * @summary Get conversation with messages
  */
-export const GetGeminiConversationParams = zod.object({
+export const GetAiConversationParams = zod.object({
   id: zod.coerce.number(),
 });
 
-export const GetGeminiConversationResponse = zod.object({
+export const GetAiConversationResponse = zod.object({
   id: zod.number(),
   title: zod.string(),
   experimentId: zod.number().nullish(),
@@ -305,6 +315,7 @@ export const GetGeminiConversationResponse = zod.object({
       role: zod.string(),
       content: zod.string(),
       createdAt: zod.coerce.date(),
+      aiRequestId: zod.string().nullish(),
     }),
   ),
 });
@@ -312,35 +323,70 @@ export const GetGeminiConversationResponse = zod.object({
 /**
  * @summary Delete a conversation
  */
-export const DeleteGeminiConversationParams = zod.object({
+export const DeleteAiConversationParams = zod.object({
   id: zod.coerce.number(),
 });
 
 /**
  * @summary List messages in a conversation
  */
-export const ListGeminiMessagesParams = zod.object({
+export const ListAiMessagesParams = zod.object({
   id: zod.coerce.number(),
 });
 
-export const ListGeminiMessagesResponseItem = zod.object({
+export const ListAiMessagesResponseItem = zod.object({
   id: zod.number(),
   conversationId: zod.number(),
   role: zod.string(),
   content: zod.string(),
   createdAt: zod.coerce.date(),
+  aiRequestId: zod.string().nullish(),
 });
-export const ListGeminiMessagesResponse = zod.array(
-  ListGeminiMessagesResponseItem,
-);
+export const ListAiMessagesResponse = zod.array(ListAiMessagesResponseItem);
 
 /**
  * @summary Send a message and receive an AI response (SSE stream)
  */
-export const SendGeminiMessageParams = zod.object({
+export const SendAiMessageParams = zod.object({
   id: zod.coerce.number(),
 });
 
-export const SendGeminiMessageBody = zod.object({
+export const SendAiMessageBody = zod.object({
   content: zod.string(),
+});
+
+/**
+ * @summary Save a scientist review for one AI generation
+ */
+export const submitAiFeedbackBodyRatingMax = 5;
+
+export const SubmitAiFeedbackBody = zod.object({
+  request_id: zod.string().uuid(),
+  rating: zod.number().min(1).max(submitAiFeedbackBodyRatingMax),
+  corrected_output: zod.string(),
+  approved_for_training: zod.boolean(),
+});
+
+export const SubmitAiFeedbackResponse = zod.object({
+  ok: zod.boolean(),
+  request_id: zod.string().uuid(),
+  approved_for_training: zod.boolean(),
+});
+
+/**
+ * @summary Admin-only training dataset readiness
+ */
+export const GetAiTrainingStatusResponse = zod.object({
+  total_generations: zod.number(),
+  approved_examples: zod.number(),
+  minimum_examples: zod.number(),
+  coverage: zod.record(zod.string(), zod.number()),
+  missing_tasks: zod.array(zod.string()),
+  split_counts: zod.object({
+    train: zod.number(),
+    validation: zod.number(),
+    test: zod.number(),
+  }),
+  missing_splits: zod.array(zod.string()),
+  ready_for_training: zod.boolean(),
 });

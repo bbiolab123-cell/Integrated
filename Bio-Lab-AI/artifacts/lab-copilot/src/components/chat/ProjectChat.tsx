@@ -7,11 +7,13 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { ImproveAiDialog } from "@/components/ai/ImproveAiDialog";
 
 interface ChatMessage {
   id: number;
   role: string;
   content: string;
+  aiRequestId?: string | null;
 }
 
 const STARTERS = [
@@ -139,8 +141,11 @@ export function ProjectChat({ projectId }: { projectId: number }) {
                 {msg.role === "user" ? (
                   <div className="whitespace-pre-wrap">{msg.content}</div>
                 ) : (
-                  <div className="prose prose-sm dark:prose-invert max-w-none break-words">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                  <div className="space-y-3">
+                    <div className="prose prose-sm dark:prose-invert max-w-none break-words">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                    </div>
+                    <ImproveAiDialog requestId={msg.aiRequestId} output={msg.content} taskLabel="project-chat answer" compact />
                   </div>
                 )}
               </div>

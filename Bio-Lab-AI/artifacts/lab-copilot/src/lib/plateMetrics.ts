@@ -61,6 +61,17 @@ export interface ControlMetrics {
   signalToBackground: number | null;
 }
 
+export interface ControlSummary {
+  positive_control_wells: string[];
+  negative_control_wells: string[];
+  blank_wells: string[];
+  sample_wells: string[];
+  mean_positive: number | null;
+  mean_negative: number | null;
+  zprime: number | null;
+  signal_to_background: number | null;
+}
+
 export function computeControlMetrics(
   wells: MetricWell[],
   roles: Record<string, WellRole>,
@@ -98,6 +109,34 @@ export function computeControlMetrics(
     sdNeg,
     zPrime,
     signalToBackground,
+  };
+}
+
+export function buildControlSummary(
+  wells: MetricWell[],
+  roles: Record<string, WellRole>,
+): ControlSummary | undefined {
+  if (Object.keys(roles).length === 0) return undefined;
+  const byRole = (role: WellRole) => Object.entries(roles)
+    .filter(([, assigned]) => assigned === role)
+    .map(([well]) => well)
+    .sort();
+  const positive = byRole("pos");
+  const negative = byRole("neg");
+  const blank = byRole("blank");
+  const sample = byRole("sample");
+  if (!positive.length && !negative.length && !blank.length && !sample.length) return undefined;
+  const metrics = computeControlMetrics(wells, roles);
+  const round = (value: number | null) => value == null ? null : Number(value.toFixed(3));
+  return {
+    positive_control_wells: positive,
+    negative_control_wells: negative,
+    blank_wells: blank,
+    sample_wells: sample,
+    mean_positive: round(metrics.meanPos),
+    mean_negative: round(metrics.meanNeg),
+    zprime: round(metrics.zPrime),
+    signal_to_background: round(metrics.signalToBackground),
   };
 }
 
