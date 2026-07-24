@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
+import { clerkClient } from "@clerk/express";
 import { getRequestUserEmail, getRequestUserId } from "../lib/requestUser";
 import { isDemoMode } from "../lib/runtimeConfig";
 
@@ -12,9 +13,24 @@ const APPROVED_ADMIN_EMAILS = new Set(
 
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
 
+async function getVerifiedAdminEmail(req: Request): Promise<string> {
+  const claimEmail = getRequestUserEmail(req);
+  if (claimEmail) return claimEmail;
+  if (isDemoMode) return normalizeEmail(process.env.DEMO_ADMIN_EMAIL || "");
+
+  try {
+    const user = await clerkClient.users.getUser(getRequestUserId(req));
+    const primaryEmail =
+      user.emailAddresses.find((address) => address.id === user.primaryEmailAddressId) ??
+      user.emailAddresses[0];
+    return normalizeEmail(primaryEmail?.emailAddress || "");
+  } catch {
+    return "";
+  }
+}
+
 export async function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  const authEmail = getRequestUserEmail(req);
-  const email = authEmail || (isDemoMode ? normalizeEmail(process.env.DEMO_ADMIN_EMAIL || "") : "");
+  const email = await getVerifiedAdminEmail(req);
   if (!APPROVED_ADMIN_EMAILS.has(email)) {
     res.status(403).json({ error: "Forbidden" });
     return;
