@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { apiFetch } from "@/lib/apiFetch";
 import { useQueryClient } from "@tanstack/react-query";
-import { useListExperiments, useGetExperiment, getListExperimentsQueryKey, getGetExperimentQueryKey, getListGeminiMessagesQueryKey } from "@workspace/api-client-react";
+import { useListExperiments, useGetExperiment, getListExperimentsQueryKey, getGetExperimentQueryKey, getListAiMessagesQueryKey } from "@workspace/api-client-react";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -578,7 +578,7 @@ function QuantifyBox({ experimentId, conversationId, wells }: { experimentId: nu
       setAskError(err instanceof Error ? err.message : "Couldn't reach the AI. Try again.");
     } finally {
       setIsAsking(false);
-      queryClient.invalidateQueries({ queryKey: getListGeminiMessagesQueryKey(conversationId) });
+      queryClient.invalidateQueries({ queryKey: getListAiMessagesQueryKey(conversationId) });
     }
   };
 

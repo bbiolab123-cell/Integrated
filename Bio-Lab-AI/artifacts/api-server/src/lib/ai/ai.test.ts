@@ -3,6 +3,7 @@ import test from "node:test";
 import { z } from "zod";
 import { buildExperimentContext, normalizeControlSummary } from "./context";
 import { unsupportedNumericClaims } from "./numericAudit";
+import { doseResponseConfigIsGrounded, QuantifyResponseSchema } from "./quantify";
 import { sanitizeAiText, sanitizeAiValue } from "./sanitize";
 import {
   AiProviderError,
@@ -94,6 +95,39 @@ test("numeric audit flags unsupported claims but permits explicitly derived valu
   assert.deepEqual(unsupportedNumericClaims("The mean was 12.5.", "well A1 was 10.0"), ["12.5"]);
   assert.deepEqual(unsupportedNumericClaims("The derived mean was 12.5.", "well A1 was 10.0"), []);
   assert.deepEqual(unsupportedNumericClaims("Well A1 was 10.0.", "well A1 was 10.0"), []);
+});
+
+test("quantify schema rejects malformed charts and requires grounded dose-response settings", () => {
+  const parsed = QuantifyResponseSchema.safeParse({
+    answer: "Column means are appropriate.",
+    chart: { type: "column_means", title: "Column means", dose_response_config: null },
+  });
+  assert.equal(parsed.success, true);
+  assert.equal(QuantifyResponseSchema.safeParse({
+    answer: "Invalid chart.",
+    chart: { type: "dose_response", title: "Curve", dose_response_config: { orientation: "column" } },
+  }).success, false);
+
+  const chart = {
+    type: "dose_response" as const,
+    title: "Dose response",
+    dose_response_config: {
+      orientation: "column" as const,
+      index: "3",
+      top_concentration: 100,
+      unit: "µM",
+      dilution_factor: 3,
+      reverse: false,
+    },
+  };
+  assert.equal(
+    doseResponseConfigIsGrounded("Use column 3 with a top concentration of 100 µM and a 3-fold dilution.", chart),
+    true,
+  );
+  assert.equal(
+    doseResponseConfigIsGrounded("Make a dose-response chart.", chart),
+    false,
+  );
 });
 
 test("Cloudflare provider translates non-streaming and SSE responses", async () => {

@@ -12,9 +12,11 @@ import {
   aiErrorStatus,
   buildExperimentContext,
   buildRelatedExperimentContext,
+  doseResponseConfigIsGrounded,
   generateAiJson,
   normalizeControlSummary,
   numericAuditNotice,
+  QuantifyResponseSchema,
   streamAiText,
   type AiCallContext,
 } from "../lib/ai";
@@ -779,59 +781,6 @@ ${relatedContext}`;
   }
 });
 
-interface QuantifyChartSpec {
-  type: "column_means" | "row_means" | "well_scatter" | "dose_response";
-  title: string;
-  // Only meaningful for type "dose_response" — extracted from the scientist's
-  // OWN question (e.g. "column 1, top conc 100uM, 3-fold serial dilution").
-  // Never guessed from data the AI hasn't been told.
-  dose_response_config?: {
-    orientation: "row" | "column";
-    index: string;
-    top_concentration: number;
-    unit: string;
-    dilution_factor: number;
-    reverse: boolean;
-  };
-}
-
-function parseQuantifyResponse(text: string): { answer: string; chart: QuantifyChartSpec | null } {
-  try {
-    const parsed = JSON.parse(text) as { answer?: unknown; chart?: unknown };
-    const answer = typeof parsed.answer === "string" ? parsed.answer : "";
-    let chart: QuantifyChartSpec | null = null;
-    if (parsed.chart && typeof parsed.chart === "object") {
-      const c = parsed.chart as Record<string, unknown>;
-      const validTypes = ["column_means", "row_means", "well_scatter", "dose_response"];
-      if (typeof c.type === "string" && validTypes.includes(c.type)) {
-        chart = { type: c.type as QuantifyChartSpec["type"], title: typeof c.title === "string" ? c.title : "Chart" };
-        if (chart.type === "dose_response" && c.dose_response_config && typeof c.dose_response_config === "object") {
-          const dc = c.dose_response_config as Record<string, unknown>;
-          const orientation = dc.orientation === "row" || dc.orientation === "column" ? dc.orientation : null;
-          const topConc = typeof dc.top_concentration === "number" && dc.top_concentration > 0 ? dc.top_concentration : null;
-          // A dose-response chart needs real config extracted from the question —
-          // if it's incomplete, drop the chart entirely rather than guess at it.
-          if (orientation && topConc) {
-            chart.dose_response_config = {
-              orientation,
-              index: typeof dc.index === "string" ? dc.index : (orientation === "column" ? "1" : "A"),
-              top_concentration: topConc,
-              unit: typeof dc.unit === "string" ? dc.unit : "µM",
-              dilution_factor: typeof dc.dilution_factor === "number" && dc.dilution_factor > 1 ? dc.dilution_factor : 3,
-              reverse: dc.reverse === true,
-            };
-          } else {
-            chart = null;
-          }
-        }
-      }
-    }
-    return { answer, chart };
-  } catch {
-    return { answer: text, chart: null };
-  }
-}
-
 // Focused Q&A for the Data Analysis "Quantify anything" box. Unlike the
 // streaming /gemini/conversations chat, this returns structured JSON so the
 // frontend can render a REAL chart when one is warranted — but the AI only
@@ -840,7 +789,7 @@ function parseQuantifyResponse(text: string): { answer: string; chart: QuantifyC
 // numbers are always computed deterministically client-side from the real
 // plate data. Persists into the same conversation as the streaming chat, so
 // both surfaces show one continuous history.
-router.post("/experiments/:id/quantify", aiRateLimiter, async (req, res) => {
+router.post("/experiments/:id/quantify", aiRateLimiter, aiDailyQuota, async (req, res) => {
   try {
     const userId = getRequestUserId(req);
     const id = parseInt(String(req.params.id), 10);
@@ -868,13 +817,8 @@ router.post("/experiments/:id/quantify", aiRateLimiter, async (req, res) => {
         .where(and(eq(experiments.id, id), eq(experiments.user_id, userId)));
     }
 
-    let plateSummary: Record<string, unknown> | null = null;
-    if (exp.raw_data_json) {
-      try { plateSummary = JSON.parse(exp.raw_data_json); } catch {}
-    }
-    const plateSummaryText = plateSummary
-      ? JSON.stringify(plateSummary, null, 2).substring(0, 4000)
-      : "No plate data uploaded yet for this experiment.";
+    const sensitiveTerms = [exp.name, ...(exp.file_name ? [exp.file_name] : [])];
+    const experimentContext = buildExperimentContext(exp, { sensitiveTerms });
 
     const assayGuidance = analysisKnowledgeBlock(`${exp.assay_type} ${exp.notes ?? ""}`);
 
@@ -903,37 +847,43 @@ Respond in this exact JSON format:
     const userPrompt = `Experiment: ${exp.name} (${exp.assay_type}, ${exp.instrument})
 Notes: ${exp.notes ?? "None"}
 
-Plate data summary:
+Complete experiment context:
 \`\`\`json
-${plateSummaryText}
+${experimentContext}
 \`\`\`
 
 Scientist's question: ${question}`;
 
     await db.insert(messages).values({ conversationId: convId, role: "user", content: question });
 
-    const response = await generateContentWithRetry({
-      model: "gemini-2.5-flash",
-      contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-      config: {
-        systemInstruction,
-        maxOutputTokens: 4096,
-        responseMimeType: "application/json",
-        thinkingConfig: { thinkingBudget: 0 },
-      },
+    const response = await generateAiJson({
+      taskType: "data_analysis",
+      userId,
+      experimentId: id,
+      systemInstruction,
+      messages: [{ role: "user", content: userPrompt }],
+      maxTokens: 4096,
+      sensitiveTerms,
+    }, QuantifyResponseSchema);
+
+    let { answer, chart } = response.data;
+    if (chart?.type === "dose_response" && !doseResponseConfigIsGrounded(`${exp.notes ?? ""}\n${question}`, chart)) {
+      chart = null;
+    }
+    const auditNotice = numericAuditNotice(answer, `${systemInstruction}\n${userPrompt}`);
+    if (auditNotice) answer += `\n\n> **Numeric verification notice:** ${auditNotice}`;
+
+    await db.insert(messages).values({
+      conversationId: convId,
+      role: "assistant",
+      content: answer,
+      aiRequestId: response.requestId,
     });
 
-    const { answer, chart } = parseQuantifyResponse(response.text ?? "{}");
-    if (!answer.trim()) {
-      return res.status(502).json({ error: "The AI returned an empty answer. Please try again." });
-    }
-
-    await db.insert(messages).values({ conversationId: convId, role: "assistant", content: answer });
-
-    return res.json({ answer, chart, conversation_id: convId });
+    return res.json({ answer, chart, conversation_id: convId, request_id: response.requestId });
   } catch (err) {
     req.log.error({ err }, "Failed to answer quantify question");
-    return res.status(500).json({ error: "Failed to answer quantify question" });
+    return res.status(aiErrorStatus(err)).json({ error: "Failed to answer quantify question" });
   }
 });
 
