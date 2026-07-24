@@ -1,17 +1,77 @@
-# Adapter release gates
+# Adapter evaluation and release gates
 
-Evaluate the adapter against the unmodified Mistral base on the held-out `test`
-split. Never use Gemini or ChatGPT output as the reference.
+The held-out `test` split is never used for gradient updates, checkpoint
+selection, prompt tuning, or repeated manual editing. It contains independent
+project/experiment groups and every website AI task. Human-approved Bio-Lab
+corrections are the reference; Gemini and ChatGPT outputs are prohibited.
 
-- Every structured protocol and Bioalyze response parses against its schema.
-- Every quoted measurement exists in the supplied context; new calculations
-  are explicitly marked as derived.
-- No response exposes user identifiers, filenames, project names, or another
-  user's experiments.
-- At least 80% of held-out answers receive a scientist rating of 4/5 or better.
-- The adapter's approval rate is at least 15 percentage points above the base.
-- Streaming endpoints produce a first chunk within 10 seconds under normal
-  network conditions and complete within the configured provider timeout.
+## Blind scientific review
 
-Record the base and adapter ratings in a dated review note. If any gate fails,
-leave `CLOUDFLARE_LORA_ID` empty, collect more corrected examples, and retrain.
+The Colab notebook deterministically generates one base and one adapter answer
+for every test prompt and randomizes them into candidate A/B. Do not open
+`blind-key.json` until the review CSV is complete.
+
+For every candidate, the site owner records:
+
+- a 1–5 scientific-quality rating;
+- whether the response would be approved for the website;
+- whether its current task-specific response schema is valid;
+- whether every quoted measurement/statistic is supported by the supplied
+  context, with new calculations clearly identified as derived;
+- whether it contains no identity, filename, credential, patient, or
+  cross-user/project information;
+- concise notes for any failure.
+
+Automated JSON parsing and unsupported-number flags are review aids. They do
+not override the human fidelity and privacy checks.
+
+## Required adapter gates
+
+Every gate must pass in the generated `release-gate-report.json`:
+
+- 100% valid structured responses, including the website's current schema;
+- 100% measurement and calculated-statistic fidelity;
+- 100% privacy and ownership-boundary pass rate;
+- at least 80% of adapter answers rated 4/5 or 5/5;
+- adapter approval rate at least 15 percentage points above the pinned base;
+- finite train/validation loss and a valid LoRA-only adapter package;
+- rank 8, only `q_proj`/`v_proj`, unquantized float adapter tensors, exact
+  Cloudflare filenames, and total adapter size below 300 MB.
+
+Any failed row fails the release. Do not average away a fabricated measurement
+or privacy error.
+
+## Private production contract tests
+
+After uploading an accepted adapter to Cloudflare—but before public rollout—
+run all current AI contracts against an owner account:
+
+- Bioalyze summary plus exactly three follow-up suggestions;
+- detailed/streaming analysis report and stored request ID;
+- experiment chat and persisted history;
+- experiment comparison;
+- protocol generation and refinement with valid `protocol_json`;
+- SOP structuring;
+- project chat and synthesis using only user-owned experiments;
+- Ask Anything;
+- complete well/control/statistic/notes/graph/protocol context;
+- structured-output retry behavior;
+- clear daily-quota exhaustion response;
+- prompt/response bodies absent from application logs.
+
+The first streaming chunk must arrive within 10 seconds under normal network
+conditions and the request must complete inside the configured provider
+timeout. Quoted numerical values must match the supplied fixture exactly.
+
+## Staged rollout and rollback
+
+1. Owner-only: run the full contract suite and inspect real owner traffic.
+2. 10%: monitor errors, latency, schema validity, quota behavior, and feedback.
+3. 50%: repeat the same checks.
+4. 100%: keep the Gemini emergency flag for seven stable days without paired
+   output logging, then remove Gemini's key, package, and implementation.
+
+Record the dataset SHA-256, base revision, adapter file hashes, Cloudflare LoRA
+ID, release report, reviewer, and rollout timestamps in the private release
+note. If any offline or production gate fails, clear/leave
+`CLOUDFLARE_LORA_ID`, roll back, collect new human corrections, and retrain.

@@ -10,20 +10,9 @@ import {
 import type { ZodType } from "zod";
 import { logger } from "../logger";
 import { sanitizeAiText } from "./sanitize";
+import { TRAINING_DATASET_SCHEMA_VERSION, type AiTaskType } from "./tasks";
 
-export const AI_TASK_TYPES = [
-  "experiment_analysis",
-  "data_analysis",
-  "experiment_chat",
-  "experiment_comparison",
-  "protocol_generation",
-  "sop_structuring",
-  "project_chat",
-  "project_synthesis",
-  "general_chat",
-] as const;
-
-export type AiTaskType = typeof AI_TASK_TYPES[number];
+export { AI_TASK_TYPES, type AiTaskType } from "./tasks";
 
 export type AiCallContext = {
   taskType: AiTaskType;
@@ -105,6 +94,7 @@ async function recordGeneration(
       task_type: context.taskType,
       input_json: JSON.stringify(messages),
       model_output: output,
+      schema_version: TRAINING_DATASET_SCHEMA_VERSION,
       experiment_id: context.experimentId ?? null,
       project_id: context.projectId ?? null,
     }).onConflictDoNothing();

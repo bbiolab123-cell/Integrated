@@ -39,7 +39,7 @@ export async function ensureAiTrainingSchema(): Promise<void> {
         rating integer,
         approved_for_training boolean NOT NULL DEFAULT false,
         provenance text NOT NULL DEFAULT 'model_draft',
-        schema_version integer NOT NULL DEFAULT 1,
+        schema_version integer NOT NULL DEFAULT 2,
         experiment_id integer REFERENCES experiments(id) ON DELETE SET NULL,
         project_id integer REFERENCES projects(id) ON DELETE SET NULL,
         created_at timestamp with time zone NOT NULL DEFAULT now(),
@@ -56,6 +56,10 @@ export async function ensureAiTrainingSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS ai_training_examples_approved_idx
         ON ai_training_examples (approved_for_training, created_at)
         WHERE approved_for_training = true
+    `);
+    await client.query(`
+      ALTER TABLE ai_training_examples
+        ALTER COLUMN schema_version SET DEFAULT 2
     `);
     await client.query("COMMIT");
   } catch (error) {

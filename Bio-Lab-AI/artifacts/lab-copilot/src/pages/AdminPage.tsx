@@ -167,17 +167,49 @@ export function AdminPage() {
           {training.isLoading ? <Skeleton className="h-20 w-full" /> : (
             <>
               <div className="flex flex-wrap gap-3 text-sm">
-                <Badge variant="outline">{training.data?.approved_examples ?? 0} / 200 approved</Badge>
-                <Badge variant={training.data?.ready_for_training ? "default" : "secondary"}>
-                  {training.data?.ready_for_training ? "Ready for Colab" : "Collecting reviews"}
+                <Badge variant="outline">
+                  {training.data?.approved_examples ?? 0} / {training.data?.minimum_examples ?? 200} exportable
                 </Badge>
-                {(training.data?.missing_tasks ?? []).length > 0 && (
-                  <span className="text-muted-foreground">Missing: {(training.data.missing_tasks as string[]).join(", ")}</span>
+                <Badge variant={training.data?.ready_for_training ? "default" : "secondary"}>
+                  {training.data?.ready_for_training ? "Ready for Colab" : "Training gate not met"}
+                </Badge>
+                {(training.data?.approved_submissions ?? 0) > (training.data?.approved_examples ?? 0) && (
+                  <span className="text-amber-700">
+                    {training.data.approved_submissions - training.data.approved_examples} approved submission(s) quarantined
+                  </span>
                 )}
-                {(training.data?.missing_splits ?? []).length > 0 && (
-                  <span className="text-muted-foreground">Need project groups for: {(training.data.missing_splits as string[]).join(", ")}</span>
+                {(training.data?.underrepresented_tasks ?? []).length > 0 && (
+                  <span className="text-muted-foreground">
+                    Need {training.data?.minimum_examples_per_task ?? 10} each: {(training.data.underrepresented_tasks as string[]).join(", ")}
+                  </span>
+                )}
+                {((training.data?.undersized_holdout_splits ?? []).length > 0
+                  || (training.data?.undergrouped_holdout_splits ?? []).length > 0) && (
+                  <span className="text-muted-foreground">
+                    Held-out data still needs enough independent project or experiment groups.
+                  </span>
+                )}
+                {(((training.data?.missing_holdout_tasks?.validation ?? []) as string[]).length > 0
+                  || ((training.data?.missing_holdout_tasks?.test ?? []) as string[]).length > 0) && (
+                  <span className="text-muted-foreground">
+                    Validation and test must each cover all nine AI feature groups.
+                  </span>
                 )}
               </div>
+              <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
+                {(["train", "validation", "test"] as const).map((split) => (
+                  <div key={split} className="rounded-md border px-3 py-2">
+                    <span className="font-medium capitalize text-foreground">{split}</span>
+                    {" · "}{training.data?.split_counts?.[split] ?? 0} examples
+                    {" · "}{training.data?.split_group_counts?.[split] ?? 0} groups
+                  </div>
+                ))}
+              </div>
+              {!!training.data?.dataset_sha256 && (
+                <p className="font-mono text-[11px] text-muted-foreground">
+                  Dataset fingerprint: {String(training.data.dataset_sha256).slice(0, 16)}…
+                </p>
+              )}
               <Button variant="outline" className="gap-2" onClick={() => void downloadTrainingData()} disabled={!training.data?.approved_examples}>
                 <Download className="h-4 w-4" /> Export de-identified JSONL
               </Button>

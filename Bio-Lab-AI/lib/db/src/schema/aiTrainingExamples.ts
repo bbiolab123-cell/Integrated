@@ -12,7 +12,7 @@ export const aiTrainingExamples = pgTable("ai_training_examples", {
   rating: integer("rating"),
   approved_for_training: boolean("approved_for_training").notNull().default(false),
   provenance: text("provenance").notNull().default("model_draft"),
-  schema_version: integer("schema_version").notNull().default(1),
+  schema_version: integer("schema_version").notNull().default(2),
   experiment_id: integer("experiment_id").references(() => experiments.id, { onDelete: "set null" }),
   project_id: integer("project_id").references(() => projects.id, { onDelete: "set null" }),
   created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
