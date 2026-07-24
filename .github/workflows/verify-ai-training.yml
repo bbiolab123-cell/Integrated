@@ -1,0 +1,69 @@
+name: Verify Bio-Lab AI Training Pipeline
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Bio-Lab-AI/artifacts/api-server/**'
+      - 'Bio-Lab-AI/artifacts/lab-copilot/src/pages/AdminPage.tsx'
+      - 'Bio-Lab-AI/lib/db/**'
+      - 'Bio-Lab-AI/lib/integrations-ai/**'
+      - 'Bio-Lab-AI/training/**'
+      - 'Bio-Lab-AI/package.json'
+      - 'Bio-Lab-AI/pnpm-lock.yaml'
+      - 'Bio-Lab-AI/pnpm-workspace.yaml'
+      - '.github/workflows/verify-ai-training.yml'
+  pull_request:
+    paths:
+      - 'Bio-Lab-AI/artifacts/api-server/**'
+      - 'Bio-Lab-AI/artifacts/lab-copilot/src/pages/AdminPage.tsx'
+      - 'Bio-Lab-AI/lib/db/**'
+      - 'Bio-Lab-AI/lib/integrations-ai/**'
+      - 'Bio-Lab-AI/training/**'
+      - 'Bio-Lab-AI/package.json'
+      - 'Bio-Lab-AI/pnpm-lock.yaml'
+      - 'Bio-Lab-AI/pnpm-workspace.yaml'
+      - '.github/workflows/verify-ai-training.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: Bio-Lab-AI
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: Bio-Lab-AI/pnpm-lock.yaml
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Test AI and training contracts
+        run: pnpm test
+
+      - name: Build API artifact
+        run: pnpm --filter @workspace/api-server run build
