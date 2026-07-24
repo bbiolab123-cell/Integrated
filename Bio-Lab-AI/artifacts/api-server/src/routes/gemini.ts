@@ -2,21 +2,30 @@ import { Router, type IRouter, type Response } from "express";
 import { eq, desc, and } from "drizzle-orm";
 import { db, conversations, messages, experiments, projects, projectDocuments } from "@workspace/db";
 import {
-  CreateGeminiConversationBody,
-  SendGeminiMessageBody,
-  ListGeminiConversationsQueryParams,
+  CreateAiConversationBody,
+  SendAiMessageBody,
+  ListAiConversationsQueryParams,
 } from "@workspace/api-zod";
-import { generateContentWithRetry, generateContentStreamWithRetry } from "../lib/aiRetry";
+import { z } from "zod";
+import {
+  aiErrorStatus,
+  buildExperimentContext,
+  buildRelatedExperimentContext,
+  generateAiJson,
+  generateAiText,
+  numericAuditNotice,
+  streamAiText,
+} from "../lib/ai";
 import { analysisKnowledgeBlock, assayGuidanceBlock } from "../lib/assayKnowledge";
 import { parseStructuredProtocol } from "../lib/protocol";
 import { getRequestUserId } from "../lib/requestUser";
-import { aiRateLimiter } from "../middlewares/rateLimit";
+import { aiDailyQuota, aiRateLimiter } from "../middlewares/rateLimit";
 import { assertMaxChars } from "../lib/requestLimits";
 
 const router: IRouter = Router();
 
 const LAB_SYSTEM_PROMPT = `You are an expert cell biologist and lab copilot with access to this lab's full experiment history.
-Think like a bench scientist: when asked about an experiment, reason from its protocol/notes — what was it trying to test, what result was expected, and does the data match? If results are off, diagnose the likely cause (distinguish a technical problem from a real biological finding) and cite the specific wells/numbers. Always reference specific experiments by name. Be specific, quantitative, and actionable.`;
+Think like a bench scientist: when asked about an experiment, reason from its protocol/notes — what was it trying to test, what result was expected, and does the data match? If results are off, diagnose the likely cause (distinguish a technical problem from a real biological finding) and cite the specific wells/numbers. Reference experiments by their supplied experiment_ref. Be specific, quantitative, and actionable.`;
 
 // Chat is a conversation, not a report — the opposite tone from protocol/analysis
 // generation, which stays thorough on purpose. Applied to chat prompts only.
@@ -51,21 +60,53 @@ Answer general scientific questions, explain concepts, help with protocol design
 const PROJECT_SYSTEM_PROMPT = `You are an expert cell biologist and research strategist acting as the copilot for an entire research PROJECT.
 You are given the project's goal and every experiment logged under it. Reason across the whole project, not one plate:
 connect findings between experiments, flag patterns, contradictions, and gaps, and recommend concrete next experiments
-that advance the project's goal. Always reference specific experiments by name. Be specific, quantitative, and actionable.`;
+that advance the project's goal. Reference experiments by their supplied experiment_ref. Be specific, quantitative, and actionable.`;
+
+const StandaloneProtocolSchema = z.object({
+  title: z.string().min(1),
+  assay_type: z.string().min(1),
+  instrument: z.string().min(1),
+  objective: z.string().min(1),
+  materials: z.array(z.string()).min(1),
+  controls: z.array(z.string()).min(1),
+  plate_layout: z.string().min(1),
+  steps: z.array(z.string()).min(1),
+  expected_readout: z.string().min(1),
+  suggested_analysis: z.string().min(1),
+});
 
 type ConversationRow = typeof conversations.$inferSelect;
 type ExperimentRow = typeof experiments.$inferSelect;
 
-function formatExperimentContext(experiment: ExperimentRow): string {
-  const conditions = experiment.notes ?? "None";
-  const results = experiment.ai_summary ?? "None";
-  return `${experiment.name}, ${experiment.date}, ${experiment.status}, conditions: ${conditions}, results: ${results}`;
+const SEARCH_STOP_WORDS = new Set(["about", "after", "again", "could", "experiment", "from", "have", "into", "project", "that", "their", "there", "these", "this", "what", "when", "where", "which", "with", "would"]);
+
+function searchTerms(value: string): Set<string> {
+  return new Set(
+    value.toLowerCase().match(/[a-z0-9][a-z0-9_-]{2,}/g)
+      ?.filter((term) => !SEARCH_STOP_WORDS.has(term)) ?? [],
+  );
 }
 
-function buildLabHistory(experimentRows: ExperimentRow[]): string {
-  return experimentRows
-    .map((experiment, index) => `Experiment ${index + 1}: ${formatExperimentContext(experiment)}`)
-    .join("\n");
+function selectRelevantProjectExperiments(rows: ExperimentRow[], query: string, limit = 3): ExperimentRow[] {
+  const terms = searchTerms(query);
+  if (!terms.size) return rows.slice(0, limit);
+  const scored = rows.map((row, index) => {
+    const name = row.name.toLowerCase();
+    const searchable = `${row.name} ${row.assay_type} ${row.instrument} ${row.status} ${row.notes ?? ""}`.toLowerCase();
+    let score = 0;
+    for (const term of terms) if (searchable.includes(term)) score += name.includes(term) ? 3 : 1;
+    return { row, index, score };
+  });
+  const matches = scored.filter((entry) => entry.score > 0).sort((a, b) => b.score - a.score || a.index - b.index);
+  return (matches.length ? matches : scored).slice(0, limit).map((entry) => entry.row);
+}
+
+function buildLabHistory(experimentRows: ExperimentRow[], metadataOnly = false): string {
+  return buildRelatedExperimentContext(
+    experimentRows,
+    experimentRows.map((experiment) => experiment.name),
+    { metadataOnly },
+  );
 }
 
 function rejectInputError(res: Response, err: unknown): boolean {
@@ -86,10 +127,10 @@ function writeAiStreamError(res: Response, message = "AI request failed. Please 
   res.end();
 }
 
-router.get("/gemini/conversations", async (req, res) => {
+router.get(["/ai/conversations", "/gemini/conversations"], async (req, res) => {
   try {
     const userId = getRequestUserId(req);
-    const query = ListGeminiConversationsQueryParams.parse(req.query);
+    const query = ListAiConversationsQueryParams.parse(req.query);
     let rows: ConversationRow[] = [];
     if (query.experiment_id) {
       const exp = await db
@@ -123,14 +164,14 @@ router.get("/gemini/conversations", async (req, res) => {
 
     res.json(rows.map((c) => ({ ...c, experimentId: convToExpMap[c.id] ?? null })));
   } catch (err) {
-    req.log.error({ err }, "Failed to list Gemini conversations");
+    req.log.error({ err }, "Failed to list AI conversations");
     res.status(500).json({ error: "Failed to list conversations" });
   }
 });
 
-router.post("/gemini/conversations", async (req, res) => {
+router.post(["/ai/conversations", "/gemini/conversations"], async (req, res) => {
   try {
-    const body = CreateGeminiConversationBody.parse(req.body);
+    const body = CreateAiConversationBody.parse(req.body);
     const userId = getRequestUserId(req);
     if (body.experimentId) {
       const ownedExperiment = await db
@@ -166,14 +207,14 @@ router.post("/gemini/conversations", async (req, res) => {
 
     res.status(201).json({ ...conv, experimentId: expRows[0]?.id ?? body.experimentId ?? null });
   } catch (err) {
-    req.log.error({ err }, "Failed to create Gemini conversation");
+    req.log.error({ err }, "Failed to create AI conversation");
     res.status(400).json({ error: "Failed to create conversation" });
   }
 });
 
-router.get("/gemini/conversations/:id", async (req, res) => {
+router.get(["/ai/conversations/:id", "/gemini/conversations/:id"], async (req, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(String(req.params.id), 10);
     const userId = getRequestUserId(req);
     const rows = await db.select().from(conversations).where(and(eq(conversations.id, id), eq(conversations.user_id, userId))).limit(1);
     if (!rows[0]) {
@@ -195,14 +236,14 @@ router.get("/gemini/conversations/:id", async (req, res) => {
 
     res.json({ ...rows[0], experimentId: expRows[0]?.id ?? null, messages: msgs });
   } catch (err) {
-    req.log.error({ err }, "Failed to get Gemini conversation");
+    req.log.error({ err }, "Failed to get AI conversation");
     res.status(500).json({ error: "Failed to get conversation" });
   }
 });
 
-router.delete("/gemini/conversations/:id", async (req, res) => {
+router.delete(["/ai/conversations/:id", "/gemini/conversations/:id"], async (req, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(String(req.params.id), 10);
     const userId = getRequestUserId(req);
     const deleted = await db.delete(conversations).where(and(eq(conversations.id, id), eq(conversations.user_id, userId))).returning();
     if (!deleted[0]) {
@@ -211,14 +252,14 @@ router.delete("/gemini/conversations/:id", async (req, res) => {
     }
     res.status(204).send();
   } catch (err) {
-    req.log.error({ err }, "Failed to delete Gemini conversation");
+    req.log.error({ err }, "Failed to delete AI conversation");
     res.status(500).json({ error: "Failed to delete conversation" });
   }
 });
 
-router.get("/gemini/conversations/:id/messages", async (req, res) => {
+router.get(["/ai/conversations/:id/messages", "/gemini/conversations/:id/messages"], async (req, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseInt(String(req.params.id), 10);
     const userId = getRequestUserId(req);
     const owner = await db
       .select({ user_id: conversations.user_id })
@@ -236,16 +277,16 @@ router.get("/gemini/conversations/:id/messages", async (req, res) => {
       .orderBy(messages.createdAt);
     res.json(msgs);
   } catch (err) {
-    req.log.error({ err }, "Failed to list Gemini messages");
+    req.log.error({ err }, "Failed to list AI messages");
     res.status(500).json({ error: "Failed to list messages" });
   }
 });
 
-router.post("/gemini/conversations/:id/messages", aiRateLimiter, async (req, res) => {
+router.post(["/ai/conversations/:id/messages", "/gemini/conversations/:id/messages"], aiRateLimiter, aiDailyQuota, async (req, res) => {
   try {
     const convId = parseInt(String(req.params.id), 10);
     const userId = getRequestUserId(req);
-    const body = SendGeminiMessageBody.parse(req.body);
+    const body = SendAiMessageBody.parse(req.body);
     let content: string;
     try {
       content = assertMaxChars(body.content, "Message");
@@ -275,17 +316,24 @@ router.post("/gemini/conversations/:id/messages", aiRateLimiter, async (req, res
       .limit(1);
     const exp = expRows[0];
 
-    const chatHistory = await db
+    const chatHistory = (await db
       .select()
       .from(messages)
       .where(eq(messages.conversationId, convId))
-      .orderBy(messages.createdAt);
+      .orderBy(desc(messages.createdAt))
+      .limit(40))
+      .reverse()
+      // Never feed legacy Gemini assistant text into this provider or an
+      // eventual training record. User messages remain valid context.
+      .filter((message) => message.role !== "assistant" || message.aiRequestId)
+      .slice(-20);
 
     const allExperiments = await db
       .select()
       .from(experiments)
       .where(eq(experiments.user_id, userId))
-      .orderBy(desc(experiments.date));
+      .orderBy(desc(experiments.date))
+      .limit(20);
 
     const protocol = exp?.protocol_json ? parseStructuredProtocol(exp.protocol_json) : null;
 
@@ -300,28 +348,13 @@ router.post("/gemini/conversations/:id/messages", aiRateLimiter, async (req, res
         : `\n\n${assayGuidanceBlock(`${exp.assay_type} ${exp.notes ?? ""}`)}${PROTOCOL_INTERVIEW_INSTRUCTION}`;
     }
     systemInstruction += CHAT_TONE_INSTRUCTION;
-    // The chat must see the uploaded plate data itself, not just an AI-generated
-    // report — the scientist can (and does) ask about the data the moment it's
-    // uploaded, before ever clicking "Bioalyze". Without this, the chat only
-    // knows about data_analysis_report/ai_summary, which don't exist until a
-    // report has been explicitly generated — a real blind spot, not a design choice.
-    let rawDataContext = "";
-    if (exp?.raw_data_json) {
-      try {
-        const parsed = JSON.parse(exp.raw_data_json);
-        rawDataContext = `\n\nUPLOADED PLATE/EXPERIMENT DATA for this experiment (parsed from the raw upload — use this directly, including specific well IDs and values, even if no report has been generated yet):\n${JSON.stringify(parsed, null, 2).slice(0, 6000)}`;
-      } catch {
-        // raw_data_json failed to parse — omit rather than send garbage to the model.
-      }
-    }
-    // The full Data Analysis report (if one has been generated) is specific to
-    // THIS experiment, so it's appended only here — not in buildLabHistory's
-    // one-line-per-experiment summaries, which would bloat every related
-    // experiment mention with a full report each time.
-    const dataReportContext = exp?.data_analysis_report
-      ? `\n\nDETAILED DATA ANALYSIS REPORT for this experiment (already generated — reference it directly rather than re-deriving from raw data when answering):\n${exp.data_analysis_report.slice(0, 6000)}`
-      : "";
-    systemInstruction += `\n\nFULL LAB HISTORY:\n${buildLabHistory(allExperiments)}\n\nCURRENT EXPERIMENT: ${exp ? formatExperimentContext(exp) : "None"}${rawDataContext}${dataReportContext}\n\nSCIENTIST QUESTION: ${content}`;
+    const sensitiveTerms = [
+      ...allExperiments.map((experiment) => experiment.name),
+      ...(exp?.file_name ? [exp.file_name] : []),
+    ];
+    systemInstruction += `\n\nRECENT LAB HISTORY (metadata only):\n${buildLabHistory(allExperiments, true)}\n\nCURRENT EXPERIMENT WITH COMPLETE QUANTITATIVE DATA, CONTROLS, AND PROTOCOL:\n${exp
+      ? buildExperimentContext(exp, { includePreviousReport: true, sensitiveTerms })
+      : "None"}`;
 
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
@@ -329,20 +362,17 @@ router.post("/gemini/conversations/:id/messages", aiRateLimiter, async (req, res
 
     let fullResponse = "";
 
-    const stream = await generateContentStreamWithRetry({
-      model: "gemini-2.5-flash",
-      contents: chatHistory.map((m) => ({
-        role: m.role === "assistant" ? "model" : "user",
-        parts: [{ text: m.content }],
+    const stream = await streamAiText({
+      taskType: "experiment_chat",
+      userId,
+      experimentId: exp?.id,
+      systemInstruction,
+      messages: chatHistory.map((message) => ({
+        role: message.role === "assistant" ? "assistant" : "user",
+        content: message.content,
       })),
-      config: {
-        systemInstruction,
-        maxOutputTokens: 8192,
-        // gemini-2.5-flash spends "thinking" tokens from the output budget; without
-        // this it can burn the whole budget thinking and stream ZERO text, leaving
-        // the user with their message and no reply. Disable thinking for chat.
-        thinkingConfig: { thinkingBudget: 0 },
-      },
+      maxTokens: 4096,
+      sensitiveTerms,
     });
 
     for await (const chunk of stream) {
@@ -354,10 +384,18 @@ router.post("/gemini/conversations/:id/messages", aiRateLimiter, async (req, res
     }
 
     if (fullResponse.trim()) {
+      const auditNotice = exp
+        ? numericAuditNotice(fullResponse, `${systemInstruction}\n${chatHistory.map((message) => message.content).join("\n")}`)
+        : null;
+      if (auditNotice) {
+        const warning = `\n\n> **Numeric verification notice:** ${auditNotice}`;
+        fullResponse += warning;
+        res.write(`data: ${JSON.stringify({ content: warning, warning: auditNotice })}\n\n`);
+      }
       await db
         .insert(messages)
-        .values({ conversationId: convId, role: "assistant", content: fullResponse });
-      res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+        .values({ conversationId: convId, role: "assistant", content: fullResponse, aiRequestId: stream.requestId });
+      res.write(`data: ${JSON.stringify({ done: true, request_id: stream.requestId })}\n\n`);
     } else {
       // Don't persist an empty assistant bubble — surface a retryable error instead.
       res.write(
@@ -368,8 +406,8 @@ router.post("/gemini/conversations/:id/messages", aiRateLimiter, async (req, res
     }
     res.end();
   } catch (err) {
-    req.log.error({ err }, "Failed to send Gemini message");
-    writeAiStreamError(res);
+    req.log.error({ err }, "Failed to send AI message");
+    writeAiStreamError(res, aiErrorStatus(err) === 429 ? "The free daily AI limit has been reached." : undefined);
   }
 });
 
@@ -407,7 +445,7 @@ router.get("/projects/:id/messages", async (req, res) => {
   }
 });
 
-router.post("/projects/:id/chat", aiRateLimiter, async (req, res) => {
+router.post("/projects/:id/chat", aiRateLimiter, aiDailyQuota, async (req, res) => {
   try {
     const userId = getRequestUserId(req);
     const projectId = parseInt(String(req.params.id), 10);
@@ -444,18 +482,24 @@ router.post("/projects/:id/chat", aiRateLimiter, async (req, res) => {
 
     await db.insert(messages).values({ conversationId: convId, role: "user", content: messageContent });
 
-    // Ground the AI in the project's goal + every experiment in THIS project.
+    // Fetch only from this owned project, then select relevant experiments
+    // locally before any context leaves the server.
     const projExperiments = await db
       .select()
       .from(experiments)
       .where(and(eq(experiments.project_id, projectId), eq(experiments.user_id, userId)))
       .orderBy(desc(experiments.date));
 
-    const chatHistory = await db
+    const chatHistory = (await db
       .select()
       .from(messages)
       .where(eq(messages.conversationId, convId))
-      .orderBy(messages.createdAt);
+      .orderBy(desc(messages.createdAt))
+      .limit(40))
+      .reverse()
+      .filter((message) => message.role !== "assistant" || message.aiRequestId)
+      .slice(-20);
+    const relevantExperiments = selectRelevantProjectExperiments(projExperiments, messageContent);
 
     // Context documents the researcher attached (lab notebook, protocols, notes).
     // Optional grounding — never let a doc error (or a not-yet-migrated table)
@@ -468,9 +512,18 @@ router.post("/projects/:id/chat", aiRateLimiter, async (req, res) => {
         .where(and(eq(projectDocuments.project_id, projectId), eq(projectDocuments.user_id, userId)))
         .orderBy(projectDocuments.created_at);
       if (docs.length) {
-        let budget = 60_000;
+        const terms = searchTerms(messageContent);
+        const rankedDocs = docs.map((doc, index) => ({
+          doc,
+          index,
+          score: Array.from(terms).reduce(
+            (score, term) => score + (`${doc.name} ${doc.content.slice(0, 8_000)}`.toLowerCase().includes(term) ? 1 : 0),
+            0,
+          ),
+        })).sort((a, b) => b.score - a.score || a.index - b.index).slice(0, 2);
+        let budget = 12_000;
         const parts: string[] = [];
-        for (const d of docs) {
+        for (const { doc: d } of rankedDocs) {
           if (budget <= 0) break;
           const snippet = d.content.slice(0, budget);
           parts.push(`### ${d.name}\n${snippet}`);
@@ -482,28 +535,32 @@ router.post("/projects/:id/chat", aiRateLimiter, async (req, res) => {
       req.log.warn({ e }, "project documents unavailable — continuing without them");
     }
 
+    const documentNames = docsContext.match(/^### (.+)$/gm)?.map((name) => name.slice(4)) ?? [];
+    const sensitiveTerms = [proj.name, ...projExperiments.map((experiment) => experiment.name), ...documentNames];
+    const experimentIndex = buildRelatedExperimentContext(projExperiments, sensitiveTerms, { metadataOnly: true });
     const systemInstruction =
-      `${PROJECT_SYSTEM_PROMPT}${CHAT_TONE_INSTRUCTION}\n\nPROJECT: ${proj.name}\nGOAL: ${proj.goal ?? "(not specified)"}\n\n` +
-      `EXPERIMENTS IN THIS PROJECT:\n${projExperiments.length ? buildLabHistory(projExperiments) : "(none logged yet)"}` +
+      `${PROJECT_SYSTEM_PROMPT}${CHAT_TONE_INSTRUCTION}\n\nPROJECT REF: current-project\nGOAL: ${proj.goal ?? "(not specified)"}\n\n` +
+      `RELEVANT EXPERIMENT DETAILS:\n${relevantExperiments.length ? buildRelatedExperimentContext(relevantExperiments, sensitiveTerms, { includeData: true }) : "(none logged yet)"}\n\n` +
+      `PROJECT EXPERIMENT INDEX (metadata only):\n${experimentIndex}` +
       docsContext +
-      `\n\nSCIENTIST QUESTION: ${messageContent}`;
+      "\n\nUse only this project's material. Never infer or expose another user's data.";
 
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
     let fullResponse = "";
-    const stream = await generateContentStreamWithRetry({
-      model: "gemini-2.5-flash",
-      contents: chatHistory.map((m) => ({
-        role: m.role === "assistant" ? "model" : "user",
-        parts: [{ text: m.content }],
+    const stream = await streamAiText({
+      taskType: "project_chat",
+      userId,
+      projectId,
+      systemInstruction,
+      messages: chatHistory.map((message) => ({
+        role: message.role === "assistant" ? "assistant" : "user",
+        content: message.content,
       })),
-      config: {
-        systemInstruction,
-        maxOutputTokens: 8192,
-        thinkingConfig: { thinkingBudget: 0 },
-      },
+      maxTokens: 4096,
+      sensitiveTerms,
     });
 
     for await (const chunk of stream) {
@@ -515,8 +572,17 @@ router.post("/projects/:id/chat", aiRateLimiter, async (req, res) => {
     }
 
     if (fullResponse.trim()) {
-      await db.insert(messages).values({ conversationId: convId, role: "assistant", content: fullResponse });
-      res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+      const auditNotice = numericAuditNotice(
+        fullResponse,
+        `${systemInstruction}\n${chatHistory.map((message) => message.content).join("\n")}`,
+      );
+      if (auditNotice) {
+        const warning = `\n\n> **Numeric verification notice:** ${auditNotice}`;
+        fullResponse += warning;
+        res.write(`data: ${JSON.stringify({ content: warning, warning: auditNotice })}\n\n`);
+      }
+      await db.insert(messages).values({ conversationId: convId, role: "assistant", content: fullResponse, aiRequestId: stream.requestId });
+      res.write(`data: ${JSON.stringify({ done: true, request_id: stream.requestId })}\n\n`);
     } else {
       res.write(
         `data: ${JSON.stringify({
@@ -533,7 +599,7 @@ router.post("/projects/:id/chat", aiRateLimiter, async (req, res) => {
 
 // Synthesize a "state of the project" across all its experiments + context docs,
 // saved to projects.ai_summary. Returns JSON (not streamed).
-router.post("/projects/:id/synthesize", aiRateLimiter, async (req, res) => {
+router.post("/projects/:id/synthesize", aiRateLimiter, aiDailyQuota, async (req, res) => {
   try {
     const userId = getRequestUserId(req);
     const projectId = parseInt(String(req.params.id), 10);
@@ -558,7 +624,7 @@ router.post("/projects/:id/synthesize", aiRateLimiter, async (req, res) => {
       .select({ name: projectDocuments.name, content: projectDocuments.content })
       .from(projectDocuments)
       .where(and(eq(projectDocuments.project_id, projectId), eq(projectDocuments.user_id, userId)));
-    let docsBudget = 40000;
+    let docsBudget = 8_000;
     const docsBlock = docs.length
       ? "\n\nCONTEXT DOCUMENTS:\n" + docs.map((d) => {
           const slice = d.content.slice(0, Math.max(0, docsBudget));
@@ -567,35 +633,40 @@ router.post("/projects/:id/synthesize", aiRateLimiter, async (req, res) => {
         }).join("\n\n")
       : "";
 
-    const expBlock = projExperiments
-      .map((e, i) => `Experiment ${i + 1}: ${e.name} (${e.date}, ${e.status})\n  notes: ${e.notes ?? "none"}\n  result: ${e.ai_summary ?? "not analyzed"}`)
-      .join("\n\n");
+    const sensitiveTerms = [proj.name, ...projExperiments.map((experiment) => experiment.name), ...docs.map((doc) => doc.name)];
+    const expBlock = buildRelatedExperimentContext(projExperiments, sensitiveTerms, { includeData: true });
 
-    const systemInstruction = `You are a research strategist reviewing an entire project for a bench scientist. Synthesize ACROSS the experiments — don't summarize them one by one. Identify what has been established, patterns and contradictions between runs, what's still unresolved, and the 2–3 highest-value next experiments to advance the project's goal. Be specific and reference experiments by name. Write concise markdown with short bold section headers.`;
+    const systemInstruction = `You are a research strategist reviewing an entire project for a bench scientist. Synthesize ACROSS the experiments — don't summarize them one by one. Identify what has been established, patterns and contradictions between runs, what's still unresolved, and the 2–3 highest-value next experiments to advance the project's goal. Be specific and reference experiments by experiment_ref. Write concise markdown with short bold section headers.`;
 
-    const userPrompt = `PROJECT: ${proj.name}\nGOAL: ${proj.goal ?? "(not specified)"}\n\nEXPERIMENTS:\n${expBlock}${docsBlock}\n\nWrite the "state of the project" synthesis now.`;
+    const userPrompt = `PROJECT REF: current-project\nGOAL: ${proj.goal ?? "(not specified)"}\n\nEXPERIMENTS:\n${expBlock}${docsBlock}\n\nWrite the "state of the project" synthesis now.`;
 
-    const response = await generateContentWithRetry({
-      model: "gemini-2.5-flash",
-      contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-      config: { systemInstruction, maxOutputTokens: 4096, thinkingConfig: { thinkingBudget: 0 } },
+    const response = await generateAiText({
+      taskType: "project_synthesis",
+      userId,
+      projectId,
+      systemInstruction,
+      messages: [{ role: "user", content: userPrompt }],
+      maxTokens: 4096,
+      sensitiveTerms,
     });
 
-    const summary = (response.text ?? "").trim();
+    let summary = response.text.trim();
     if (!summary) {
       res.status(502).json({ error: "The AI returned an empty synthesis (it may be rate-limited). Please try again." });
       return;
     }
+    const auditNotice = numericAuditNotice(summary, `${systemInstruction}\n${userPrompt}`);
+    if (auditNotice) summary += `\n\n> **Numeric verification notice:** ${auditNotice}`;
 
-    await db.update(projects).set({ ai_summary: summary, updated_at: new Date() }).where(and(eq(projects.id, projectId), eq(projects.user_id, userId)));
-    res.json({ ai_summary: summary });
+    await db.update(projects).set({ ai_summary: summary, ai_summary_request_id: response.requestId, updated_at: new Date() }).where(and(eq(projects.id, projectId), eq(projects.user_id, userId)));
+    res.json({ ai_summary: summary, request_id: response.requestId });
   } catch (err) {
     req.log.error({ err }, "Failed to synthesize project");
-    res.status(500).json({ error: "Failed to synthesize project" });
+    res.status(aiErrorStatus(err)).json({ error: "Failed to synthesize project" });
   }
 });
 
-router.post("/gemini/general-chat", aiRateLimiter, async (req, res) => {
+router.post(["/ai/general-chat", "/gemini/general-chat"], aiRateLimiter, aiDailyQuota, async (req, res) => {
   try {
     const { message: rawMessage } = req.body as { message?: string };
     if (!rawMessage?.trim()) {
@@ -610,37 +681,22 @@ router.post("/gemini/general-chat", aiRateLimiter, async (req, res) => {
       throw err;
     }
 
-    // Inject the user's own experiment history so "Ask Anything" can answer
-    // questions about their real data (the "second brain" behaviour).
     const userId = getRequestUserId(req);
-    const experimentRows = await db
-      .select()
-      .from(experiments)
-      .where(eq(experiments.user_id, userId))
-      .orderBy(desc(experiments.created_at))
-      .limit(30);
-
-    const systemInstruction =
-      (experimentRows.length > 0
-        ? `${LAB_SYSTEM_PROMPT}\n\nThis scientist's most recent experiments:\n${buildLabHistory(
-            experimentRows,
-          )}\n\nWhen the question relates to their work, ground your answer in these experiments and cite them by name. For general scientific questions, answer normally.`
-        : GENERAL_SYSTEM_PROMPT) + CHAT_TONE_INSTRUCTION;
+    // "Ask Anything" is intentionally general. Project/experiment grounding is
+    // available in the scoped copilots and must not be injected implicitly here.
+    const systemInstruction = `${GENERAL_SYSTEM_PROMPT}${CHAT_TONE_INSTRUCTION}`;
 
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
     let fullResponse = "";
-    const stream = await generateContentStreamWithRetry({
-      model: "gemini-2.5-flash",
-      contents: [{ role: "user", parts: [{ text: message }] }],
-      config: {
-        systemInstruction,
-        maxOutputTokens: 4096,
-        // See chat route: disable thinking so 2.5-flash doesn't stream an empty reply.
-        thinkingConfig: { thinkingBudget: 0 },
-      },
+    const stream = await streamAiText({
+      taskType: "general_chat",
+      userId,
+      systemInstruction,
+      messages: [{ role: "user", content: message }],
+      maxTokens: 2048,
     });
 
     for await (const chunk of stream) {
@@ -652,7 +708,7 @@ router.post("/gemini/general-chat", aiRateLimiter, async (req, res) => {
     }
 
     if (fullResponse.trim()) {
-      res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+      res.write(`data: ${JSON.stringify({ done: true, request_id: stream.requestId })}\n\n`);
     } else {
       res.write(
         `data: ${JSON.stringify({
@@ -671,7 +727,7 @@ router.post("/gemini/general-chat", aiRateLimiter, async (req, res) => {
 // Describe a research goal → get a structured, bench-ready protocol. Grounded in
 // the scientist's recent experiments for consistency. Returns JSON the frontend
 // can preview and use to pre-fill a new experiment.
-router.post("/gemini/generate-protocol", aiRateLimiter, async (req, res) => {
+router.post(["/ai/generate-protocol", "/gemini/generate-protocol"], aiRateLimiter, aiDailyQuota, async (req, res) => {
   try {
     const userId = getRequestUserId(req);
     const { goal: rawGoal, assay_type: rawAssayType } = req.body as { goal?: string; assay_type?: string };
@@ -717,30 +773,19 @@ Respond in this exact JSON format:
   "suggested_analysis": "the statistics/curve fit to apply (e.g. 4PL IC50, Z'-factor)"
 }`;
 
-    const response = await generateContentWithRetry({
-      model: "gemini-2.5-flash",
-      contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-      config: {
-        systemInstruction,
-        maxOutputTokens: 8192,
-        responseMimeType: "application/json",
-        thinkingConfig: { thinkingBudget: 0 },
-      },
-    });
+    const response = await generateAiJson({
+      taskType: "protocol_generation",
+      userId,
+      systemInstruction,
+      messages: [{ role: "user", content: userPrompt }],
+      maxTokens: 4096,
+      sensitiveTerms: recent.map((experiment) => experiment.name),
+    }, StandaloneProtocolSchema);
 
-    const text = response.text ?? "{}";
-    let protocol: unknown;
-    try {
-      protocol = JSON.parse(text);
-    } catch {
-      res.status(502).json({ error: "AI returned a malformed protocol — please try again." });
-      return;
-    }
-
-    res.json(protocol);
+    res.json({ ...response.data, ai_request_id: response.requestId });
   } catch (err) {
     req.log.error({ err }, "Failed to generate protocol");
-    res.status(500).json({ error: "Failed to generate protocol" });
+    res.status(aiErrorStatus(err)).json({ error: "Failed to generate protocol" });
   }
 });
 

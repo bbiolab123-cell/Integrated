@@ -29,11 +29,12 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AttachDataCard } from "@/components/experiment/AttachDataCard";
 import { ProtocolCard } from "@/components/experiment/ProtocolCard";
+import { ImproveAiDialog } from "@/components/ai/ImproveAiDialog";
 import { CommentsPanel } from "@/components/experiment/CommentsPanel";
 import { ExperimentTasksPanel } from "@/components/experiment/ExperimentTasksPanel";
 import { RecommendationActions } from "@/components/experiment/RecommendationActions";
 import { printExperimentReport } from "@/lib/printExperimentReport";
-import { computeControlMetrics, ROLE_COLOR, ROLE_LABEL, ROLE_SHORT, type WellRole } from "@/lib/plateMetrics";
+import { buildControlSummary, computeControlMetrics, ROLE_COLOR, ROLE_LABEL, ROLE_SHORT, type WellRole } from "@/lib/plateMetrics";
 import { DoseResponseCard } from "@/components/DoseResponseCard";
 import { isEnabled } from "@/lib/features";
 import { apiFetch } from "@/lib/apiFetch";
@@ -230,7 +231,7 @@ export function ExperimentDetail() {
     if (!experiment) return;
     setStartingChat(true);
     try {
-      const resp = await apiFetch("/api/gemini/conversations", {
+      const resp = await apiFetch("/api/ai/conversations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: `Copilot: ${experiment.name}`, experimentId: expId }),
@@ -299,25 +300,9 @@ export function ExperimentDetail() {
 
   // When the user has marked control wells, send them to the analyzer as ground
   // truth so the AI quantifies off the real plate map instead of guessing.
-  const controlSummary = (() => {
-    if (!isPlate96 || Object.keys(wellRoles).length === 0) return undefined;
-    const byRole = (role: WellRole) =>
-      Object.entries(wellRoles).filter(([, r]) => r === role).map(([w]) => w).sort();
-    const pos = byRole("pos");
-    const neg = byRole("neg");
-    const blank = byRole("blank");
-    if (pos.length === 0 && neg.length === 0 && blank.length === 0) return undefined;
-    const round = (n: number | null) => (n == null ? null : Number(n.toFixed(3)));
-    return {
-      positive_control_wells: pos,
-      negative_control_wells: neg,
-      blank_wells: blank,
-      mean_positive: round(controlMetrics?.meanPos ?? null),
-      mean_negative: round(controlMetrics?.meanNeg ?? null),
-      zprime: round(controlMetrics?.zPrime ?? null),
-      signal_to_background: round(controlMetrics?.signalToBackground ?? null),
-    };
-  })();
+  const controlSummary = isPlate96 && Array.isArray(rawData?.wells)
+    ? buildControlSummary(rawData.wells, wellRoles)
+    : undefined;
   const analyzeData = (controlSummary ? { control_summary: controlSummary } : {}) as Record<string, unknown>;
   const suggestions: {
     title: string;
@@ -476,6 +461,7 @@ export function ExperimentDetail() {
                 <ProtocolCard
                   experimentId={expId}
                   protocolJson={experiment.protocol_json ?? null}
+                  protocolRequestId={experiment.protocol_ai_request_id}
                   onUpdated={() => queryClient.invalidateQueries({ queryKey: getGetExperimentQueryKey(expId) })}
                 />
               </motion.div>
@@ -795,6 +781,9 @@ export function ExperimentDetail() {
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>
                         {experiment.ai_summary}
                       </ReactMarkdown>
+                    </div>
+                    <div className="mt-4">
+                      <ImproveAiDialog requestId={experiment.ai_summary_request_id} output={experiment.ai_summary} taskLabel="experiment analysis" compact />
                     </div>
                   </CardContent>
                 </Card>

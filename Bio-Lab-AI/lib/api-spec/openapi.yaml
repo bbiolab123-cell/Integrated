@@ -12,8 +12,8 @@ tags:
     description: Health operations
   - name: experiments
     description: Lab experiment management
-  - name: gemini
-    description: Gemini AI chat and image operations
+  - name: ai
+    description: Provider-neutral Bio-Lab AI operations
 paths:
   /healthz:
     get:
@@ -220,10 +220,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/ApiError"
 
-  /gemini/conversations:
+  /ai/conversations:
     get:
-      operationId: listGeminiConversations
-      tags: [gemini]
+      operationId: listAiConversations
+      tags: [ai]
       summary: List all conversations
       parameters:
         - name: experiment_id
@@ -238,28 +238,28 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/GeminiConversation"
+                  $ref: "#/components/schemas/AiConversation"
     post:
-      operationId: createGeminiConversation
-      tags: [gemini]
+      operationId: createAiConversation
+      tags: [ai]
       summary: Create a new conversation
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CreateGeminiConversationBody"
+              $ref: "#/components/schemas/CreateAiConversationBody"
       responses:
         "201":
           description: Created conversation
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GeminiConversation"
-  /gemini/conversations/{id}:
+                $ref: "#/components/schemas/AiConversation"
+  /ai/conversations/{id}:
     get:
-      operationId: getGeminiConversation
-      tags: [gemini]
+      operationId: getAiConversation
+      tags: [ai]
       summary: Get conversation with messages
       parameters:
         - name: id
@@ -273,16 +273,16 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GeminiConversationWithMessages"
+                $ref: "#/components/schemas/AiConversationWithMessages"
         "404":
           description: Not found
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GeminiError"
+                $ref: "#/components/schemas/AiError"
     delete:
-      operationId: deleteGeminiConversation
-      tags: [gemini]
+      operationId: deleteAiConversation
+      tags: [ai]
       summary: Delete a conversation
       parameters:
         - name: id
@@ -298,11 +298,11 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GeminiError"
-  /gemini/conversations/{id}/messages:
+                $ref: "#/components/schemas/AiError"
+  /ai/conversations/{id}/messages:
     get:
-      operationId: listGeminiMessages
-      tags: [gemini]
+      operationId: listAiMessages
+      tags: [ai]
       summary: List messages in a conversation
       parameters:
         - name: id
@@ -318,10 +318,10 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/GeminiMessage"
+                  $ref: "#/components/schemas/AiMessage"
     post:
-      operationId: sendGeminiMessage
-      tags: [gemini]
+      operationId: sendAiMessage
+      tags: [ai]
       summary: Send a message and receive an AI response (SSE stream)
       parameters:
         - name: id
@@ -334,12 +334,57 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/SendGeminiMessageBody"
+              $ref: "#/components/schemas/SendAiMessageBody"
       responses:
         "200":
           description: SSE stream of assistant response chunks
           content:
             text/event-stream: {}
+
+  /ai/feedback:
+    post:
+      operationId: submitAiFeedback
+      tags: [ai]
+      summary: Save a scientist review for one AI generation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AiFeedbackBody"
+      responses:
+        "200":
+          description: Feedback saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiFeedbackResult"
+
+  /ai/training/status:
+    get:
+      operationId: getAiTrainingStatus
+      tags: [ai]
+      summary: Admin-only training dataset readiness
+      responses:
+        "200":
+          description: Training dataset status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiTrainingStatus"
+
+  /ai/training/export:
+    get:
+      operationId: exportAiTrainingData
+      tags: [ai]
+      summary: Admin-only de-identified approved JSONL export
+      responses:
+        "200":
+          description: Approved supervised fine-tuning examples
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
 
 components:
   schemas:
@@ -416,7 +461,13 @@ components:
         raw_data_json:
           type: string
           nullable: true
+        control_summary_json:
+          type: string
+          nullable: true
         ai_summary:
+          type: string
+          nullable: true
+        ai_summary_request_id:
           type: string
           nullable: true
         ai_next_experiments_json:
@@ -426,8 +477,17 @@ components:
           type: string
           nullable: true
           description: Persisted long-form Data Analysis report (markdown) from POST /:id/data-analysis
+        data_analysis_request_id:
+          type: string
+          nullable: true
+        protocol_ai_request_id:
+          type: string
+          nullable: true
         conversation_id:
           type: integer
+        request_id:
+          type: string
+          format: uuid
           nullable: true
         created_at:
           type: string
@@ -512,6 +572,7 @@ components:
         - ai_summary
         - suggestions
         - conversation_id
+        - request_id
 
     NextExperimentSuggestion:
       type: object
@@ -578,7 +639,7 @@ components:
         - experiments_by_date
         - assay_type_breakdown
 
-    GeminiConversation:
+    AiConversation:
       type: object
       properties:
         id:
@@ -595,7 +656,7 @@ components:
         - id
         - title
         - createdAt
-    GeminiMessage:
+    AiMessage:
       type: object
       properties:
         id:
@@ -609,13 +670,16 @@ components:
         createdAt:
           type: string
           format: date-time
+        aiRequestId:
+          type: string
+          nullable: true
       required:
         - id
         - conversationId
         - role
         - content
         - createdAt
-    CreateGeminiConversationBody:
+    CreateAiConversationBody:
       type: object
       properties:
         title:
@@ -625,14 +689,14 @@ components:
           nullable: true
       required:
         - title
-    SendGeminiMessageBody:
+    SendAiMessageBody:
       type: object
       properties:
         content:
           type: string
       required:
         - content
-    GeminiConversationWithMessages:
+    AiConversationWithMessages:
       type: object
       properties:
         id:
@@ -648,16 +712,79 @@ components:
         messages:
           type: array
           items:
-            $ref: "#/components/schemas/GeminiMessage"
+            $ref: "#/components/schemas/AiMessage"
       required:
         - id
         - title
         - createdAt
         - messages
-    GeminiError:
+    AiError:
       type: object
       properties:
         error:
           type: string
       required:
         - error
+
+    AiFeedbackBody:
+      type: object
+      properties:
+        request_id:
+          type: string
+          format: uuid
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        corrected_output:
+          type: string
+        approved_for_training:
+          type: boolean
+      required: [request_id, rating, corrected_output, approved_for_training]
+
+    AiFeedbackResult:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        request_id:
+          type: string
+          format: uuid
+        approved_for_training:
+          type: boolean
+      required: [ok, request_id, approved_for_training]
+
+    AiTrainingStatus:
+      type: object
+      properties:
+        total_generations:
+          type: integer
+        approved_examples:
+          type: integer
+        minimum_examples:
+          type: integer
+        coverage:
+          type: object
+          additionalProperties:
+            type: integer
+        missing_tasks:
+          type: array
+          items:
+            type: string
+        split_counts:
+          type: object
+          required: [train, validation, test]
+          properties:
+            train:
+              type: integer
+            validation:
+              type: integer
+            test:
+              type: integer
+        missing_splits:
+          type: array
+          items:
+            type: string
+        ready_for_training:
+          type: boolean
+      required: [total_generations, approved_examples, minimum_examples, coverage, missing_tasks, split_counts, missing_splits, ready_for_training]

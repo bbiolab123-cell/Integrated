@@ -4,10 +4,11 @@ import { Send, Bot, User, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { useListGeminiMessages, getListGeminiMessagesQueryKey } from "@workspace/api-client-react";
+import { useListAiMessages, getListAiMessagesQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { ImproveAiDialog } from "@/components/ai/ImproveAiDialog";
 
 type CopilotChatProps = {
   conversationId: number;
@@ -21,10 +22,10 @@ export function CopilotChat({ conversationId }: CopilotChatProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
 
-  const { data: messages = [], isLoading } = useListGeminiMessages(conversationId, {
+  const { data: messages = [], isLoading } = useListAiMessages(conversationId, {
     query: {
       enabled: !!conversationId,
-      queryKey: getListGeminiMessagesQueryKey(conversationId)
+      queryKey: getListAiMessagesQueryKey(conversationId)
     }
   });
 
@@ -59,12 +60,12 @@ export function CopilotChat({ conversationId }: CopilotChatProps) {
       createdAt: new Date().toISOString()
     };
 
-    queryClient.setQueryData(getListGeminiMessagesQueryKey(conversationId), (old: any) => {
+    queryClient.setQueryData(getListAiMessagesQueryKey(conversationId), (old: any) => {
       return [...(old || []), tempUserMsg];
     });
 
     try {
-      const response = await apiFetch(`/api/gemini/conversations/${conversationId}/messages`, {
+      const response = await apiFetch(`/api/ai/conversations/${conversationId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: userMessage }),
@@ -100,7 +101,7 @@ export function CopilotChat({ conversationId }: CopilotChatProps) {
                 setChatError(data.error);
               }
               if (data.done) {
-                queryClient.invalidateQueries({ queryKey: getListGeminiMessagesQueryKey(conversationId) });
+                queryClient.invalidateQueries({ queryKey: getListAiMessagesQueryKey(conversationId) });
               }
             } catch (err) {
               console.error("Parse error", err);
@@ -114,7 +115,7 @@ export function CopilotChat({ conversationId }: CopilotChatProps) {
     } finally {
       setIsStreaming(false);
       setAssistantBuffer("");
-      queryClient.invalidateQueries({ queryKey: getListGeminiMessagesQueryKey(conversationId) });
+      queryClient.invalidateQueries({ queryKey: getListAiMessagesQueryKey(conversationId) });
     }
   };
 
@@ -157,10 +158,13 @@ export function CopilotChat({ conversationId }: CopilotChatProps) {
                 {msg.role === 'user' ? (
                   <div className="whitespace-pre-wrap">{msg.content}</div>
                 ) : (
-                  <div className="prose prose-sm dark:prose-invert max-w-none break-words">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {msg.content}
-                    </ReactMarkdown>
+                  <div className="space-y-3">
+                    <div className="prose prose-sm dark:prose-invert max-w-none break-words">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {msg.content}
+                      </ReactMarkdown>
+                    </div>
+                    <ImproveAiDialog requestId={msg.aiRequestId} output={msg.content} taskLabel="experiment-chat answer" compact />
                   </div>
                 )}
               </div>
