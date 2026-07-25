@@ -27,6 +27,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { ProjectChat } from "@/components/chat/ProjectChat";
+import { ProtocolCard } from "@/components/experiment/ProtocolCard";
 import { LabConversation, LabPageHeader, LabPanel, LabSectionHeader } from "@/components/lab/LivingLab";
 
 interface ExperimentRef {
@@ -43,7 +44,9 @@ interface ProjectDetailData {
   name: string;
   goal: string | null;
   status: string;
+  protocol_json: string | null;
   ai_summary: string | null;
+  ai_summary_generated_at: string | null;
   experiments: ExperimentRef[];
 }
 
@@ -311,10 +314,18 @@ export function ProjectDetail() {
       <Card className="lab-panel overflow-hidden rounded-[1.8rem] border-primary/20">
         <CardHeader className="py-4 border-b">
           <div className="flex items-center justify-between gap-3">
-            <CardTitle className="text-lg flex items-center gap-2">
-              <Sparkles className="h-5 w-5 text-primary" />
-              Project synthesis
-            </CardTitle>
+            <div>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Sparkles className="h-5 w-5 text-primary" />
+                Project synthesis
+              </CardTitle>
+              {project.ai_summary_generated_at && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  Last updated {(() => { try { return format(parseISO(project.ai_summary_generated_at!), "MMM d, h:mm a"); } catch { return project.ai_summary_generated_at; } })()}
+                  {" — refreshes automatically when an experiment gets new data"}
+                </p>
+              )}
+            </div>
             <Button
               variant="outline"
               size="sm"
@@ -408,6 +419,19 @@ export function ProjectDetail() {
           ))}
         </div>
       )}
+
+      {/* Project-level plan — one overarching protocol for the whole project */}
+      <div className="pt-2">
+        <ProtocolCard
+          experimentId={project.id}
+          protocolJson={project.protocol_json}
+          apiBasePath={`/api/projects/${project.id}`}
+          showUpload={false}
+          noneTitle="No project plan yet"
+          noneDescription="Generate an overarching plan with AI — aims, phases, and how the experiments in this project build on each other. Distinct from each experiment's own SOP."
+          onUpdated={invalidate}
+        />
+      </div>
 
       {/* Tasks across this project's experiments */}
       <div className="space-y-3 pt-2">

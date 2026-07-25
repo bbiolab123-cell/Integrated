@@ -9,6 +9,7 @@ import {
 import { generateContentWithRetry, generateContentStreamWithRetry } from "../lib/aiRetry";
 import { analysisKnowledgeBlock, assayGuidanceBlock } from "../lib/assayKnowledge";
 import { parseStructuredProtocol } from "../lib/protocol";
+import { synthesizeProject } from "../lib/projectSynthesis";
 import { getRequestUserId } from "../lib/requestUser";
 import { aiRateLimiter } from "../middlewares/rateLimit";
 import { assertMaxChars } from "../lib/requestLimits";
@@ -532,63 +533,20 @@ router.post("/projects/:id/chat", aiRateLimiter, async (req, res) => {
 });
 
 // Synthesize a "state of the project" across all its experiments + context docs,
-// saved to projects.ai_summary. Returns JSON (not streamed).
+// saved to projects.ai_summary. Returns JSON (not streamed). Same logic also
+// runs automatically (fire-and-forget) whenever an experiment in the project
+// gets new data or an analysis report — see triggerProjectSynthesis in
+// lib/projectSynthesis.ts, called from experiments.ts.
 router.post("/projects/:id/synthesize", aiRateLimiter, async (req, res) => {
   try {
     const userId = getRequestUserId(req);
     const projectId = parseInt(String(req.params.id), 10);
-    const projRows = await db.select().from(projects).where(and(eq(projects.id, projectId), eq(projects.user_id, userId))).limit(1);
-    const proj = projRows[0];
-    if (!proj) {
-      res.status(404).json({ error: "Project not found" });
+    const result = await synthesizeProject(projectId, userId);
+    if ("error" in result) {
+      res.status(result.status).json({ error: result.error });
       return;
     }
-
-    const projExperiments = await db
-      .select()
-      .from(experiments)
-      .where(and(eq(experiments.project_id, projectId), eq(experiments.user_id, userId)))
-      .orderBy(desc(experiments.date));
-    if (projExperiments.length === 0) {
-      res.status(400).json({ error: "Add experiments to this project before synthesizing." });
-      return;
-    }
-
-    const docs = await db
-      .select({ name: projectDocuments.name, content: projectDocuments.content })
-      .from(projectDocuments)
-      .where(and(eq(projectDocuments.project_id, projectId), eq(projectDocuments.user_id, userId)));
-    let docsBudget = 40000;
-    const docsBlock = docs.length
-      ? "\n\nCONTEXT DOCUMENTS:\n" + docs.map((d) => {
-          const slice = d.content.slice(0, Math.max(0, docsBudget));
-          docsBudget -= slice.length;
-          return `[${d.name}]\n${slice}`;
-        }).join("\n\n")
-      : "";
-
-    const expBlock = projExperiments
-      .map((e, i) => `Experiment ${i + 1}: ${e.name} (${e.date}, ${e.status})\n  notes: ${e.notes ?? "none"}\n  result: ${e.ai_summary ?? "not analyzed"}`)
-      .join("\n\n");
-
-    const systemInstruction = `You are a research strategist reviewing an entire project for a bench scientist. Synthesize ACROSS the experiments — don't summarize them one by one. Identify what has been established, patterns and contradictions between runs, what's still unresolved, and the 2–3 highest-value next experiments to advance the project's goal. Be specific and reference experiments by name. Write concise markdown with short bold section headers.`;
-
-    const userPrompt = `PROJECT: ${proj.name}\nGOAL: ${proj.goal ?? "(not specified)"}\n\nEXPERIMENTS:\n${expBlock}${docsBlock}\n\nWrite the "state of the project" synthesis now.`;
-
-    const response = await generateContentWithRetry({
-      model: "gemini-2.5-flash",
-      contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-      config: { systemInstruction, maxOutputTokens: 4096, thinkingConfig: { thinkingBudget: 0 } },
-    });
-
-    const summary = (response.text ?? "").trim();
-    if (!summary) {
-      res.status(502).json({ error: "The AI returned an empty synthesis (it may be rate-limited). Please try again." });
-      return;
-    }
-
-    await db.update(projects).set({ ai_summary: summary, updated_at: new Date() }).where(and(eq(projects.id, projectId), eq(projects.user_id, userId)));
-    res.json({ ai_summary: summary });
+    res.json(result);
   } catch (err) {
     req.log.error({ err }, "Failed to synthesize project");
     res.status(500).json({ error: "Failed to synthesize project" });

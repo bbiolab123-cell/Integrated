@@ -3,11 +3,22 @@ import { eq, and, desc, sql } from "drizzle-orm";
 import { db, projects, experiments, projectDocuments, tasks } from "@workspace/db";
 import { getRequestUserId } from "../lib/requestUser";
 import { decodeUpload, UploadInputError } from "../lib/uploadValidation";
+import { PROTOCOL_JSON_FORMAT, parseStructuredProtocol, structureProtocolWithAI } from "../lib/protocol";
+import { aiRateLimiter } from "../middlewares/rateLimit";
+import { assertMaxChars } from "../lib/requestLimits";
 import mammoth from "mammoth";
 import pdfParse from "pdf-parse";
 
 const router: IRouter = Router();
 const MAX_DOC_CHARS = 200_000;
+
+function requestBody(reqBody: unknown): Record<string, unknown> {
+  return reqBody && typeof reqBody === "object" ? (reqBody as Record<string, unknown>) : {};
+}
+
+function optionalString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
 
 // ── list the user's projects (with experiment counts) ──
 router.get("/projects", async (req, res) => {
@@ -123,6 +134,108 @@ router.get("/projects/:id/tasks", async (req, res) => {
   } catch (err) {
     req.log.error({ err }, "Failed to list project tasks");
     return res.status(500).json({ error: "Failed to list project tasks" });
+  }
+});
+
+// ── project-level protocol: one overarching plan for the whole project,
+// distinct from each experiment's own SOP. Same generate/refine pattern as
+// experiments.ts's protocol route, grounded on the project goal + every
+// attached context document + a summary of the experiments run so far. ──
+router.post("/projects/:id/protocol/generate", aiRateLimiter, async (req, res) => {
+  try {
+    const userId = getRequestUserId(req);
+    const projectId = parseInt(String(req.params.id), 10);
+
+    const body = requestBody(req.body);
+    let refineNote = "";
+    try {
+      refineNote = optionalString(body.refine_note) ? assertMaxChars(String(body.refine_note), "Refinement note") : "";
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("Maximum length")) {
+        return res.status(413).json({ error: err.message });
+      }
+      throw err;
+    }
+
+    const rows = await db
+      .select()
+      .from(projects)
+      .where(and(eq(projects.id, projectId), eq(projects.user_id, userId)))
+      .limit(1);
+    const project = rows[0];
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const existingProtocol = project.protocol_json ? parseStructuredProtocol(project.protocol_json) : null;
+
+    const exps = await db
+      .select({ name: experiments.name, assay_type: experiments.assay_type, status: experiments.status })
+      .from(experiments)
+      .where(and(eq(experiments.project_id, projectId), eq(experiments.user_id, userId)))
+      .orderBy(desc(experiments.created_at));
+    const experimentsSummary = exps.length
+      ? exps.map((e) => `- ${e.name} (${e.assay_type}, status: ${e.status})`).join("\n")
+      : "(no experiments attached yet)";
+
+    const docs = await db
+      .select({ name: projectDocuments.name, content: projectDocuments.content })
+      .from(projectDocuments)
+      .where(and(eq(projectDocuments.project_id, projectId), eq(projectDocuments.user_id, userId)))
+      .orderBy(desc(projectDocuments.created_at));
+    const docsContext = docs.length
+      ? docs.map((d) => `--- ${d.name} ---\n${d.content.slice(0, 8000)}`).join("\n\n")
+      : "(no context documents attached)";
+
+    const systemInstruction = `You are an expert experimental designer for a cell and molecular biology lab, writing an overarching PROJECT plan — not a single experiment's SOP. This plan should describe the project's aims, the phases/experiments needed to test them, and how they build on each other. Use "steps" for the sequence of experiments/phases (not bench pipetting steps), "materials" for shared reagents/resources across the project, and "controls" for standards that should stay consistent across every experiment in it so results are comparable.
+
+Always end with "review_notes": a short, honestly critical list of gaps in the project plan (e.g. missing a control experiment, an assay that should come before another, no replication strategy across experiments) — be a critical reviewer, not a cheerleader.`;
+
+    const userPrompt = existingProtocol
+      ? `Refine the existing project plan below based on the scientist's note. Keep everything that still applies; change what the note asks for.
+
+EXISTING PLAN:
+${JSON.stringify(existingProtocol, null, 2)}
+
+SCIENTIST'S REFINEMENT NOTE: ${refineNote || "(none — just re-review and tighten the existing plan given the current experiments)"}
+
+EXPERIMENTS IN THIS PROJECT SO FAR:
+${experimentsSummary}
+
+ATTACHED CONTEXT DOCUMENTS:
+${docsContext}
+
+IMPORTANT: also fill "changes_summary" — a specific, concrete list of what you actually changed vs. the existing plan above. If you changed nothing, say so explicitly rather than leaving it empty.
+
+Respond in this exact JSON format:
+${PROTOCOL_JSON_FORMAT}`
+      : `Design an overarching plan for this project.
+
+Project name: ${project.name}
+Project goal: ${project.goal ?? "(none provided — infer reasonable defaults and note assumptions in review_notes)"}
+
+EXPERIMENTS IN THIS PROJECT SO FAR:
+${experimentsSummary}
+
+ATTACHED CONTEXT DOCUMENTS:
+${docsContext}
+
+Respond in this exact JSON format:
+${PROTOCOL_JSON_FORMAT}`;
+
+    const protocol = await structureProtocolWithAI(systemInstruction, userPrompt);
+    if (!protocol) {
+      return res.status(502).json({ error: "The AI returned a malformed plan. Please try again." });
+    }
+
+    const { changes_summary, ...protocolToPersist } = protocol;
+    await db
+      .update(projects)
+      .set({ protocol_json: JSON.stringify(protocolToPersist), updated_at: new Date() })
+      .where(and(eq(projects.id, projectId), eq(projects.user_id, userId)));
+
+    return res.json(protocol);
+  } catch (err) {
+    req.log.error({ err }, "Failed to generate project protocol");
+    return res.status(500).json({ error: "Failed to generate project protocol" });
   }
 });
 

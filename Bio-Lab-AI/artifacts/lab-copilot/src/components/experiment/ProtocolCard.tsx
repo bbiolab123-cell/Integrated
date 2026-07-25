@@ -42,10 +42,20 @@ export function ProtocolCard({
   experimentId,
   protocolJson,
   onUpdated,
+  apiBasePath,
+  showUpload = true,
+  noneTitle = "No protocol yet",
+  noneDescription = "Upload an existing SOP, or chat with the copilot below and generate one — it'll ask about materials, ranges, and controls if it needs more detail.",
 }: {
   experimentId: number;
   protocolJson: string | null;
   onUpdated: () => void;
+  /** Defaults to the per-experiment SOP endpoint; pass e.g. `/api/projects/${id}` to generate a project-level plan instead. */
+  apiBasePath?: string;
+  /** Project-level plans are AI-only — hide the .docx upload path. */
+  showUpload?: boolean;
+  noneTitle?: string;
+  noneDescription?: string;
 }) {
   const { toast } = useToast();
   const protocol = parseProtocol(protocolJson);
@@ -59,6 +69,7 @@ export function ProtocolCard({
   // whole protocol to spot it themselves.
   const [lastChanges, setLastChanges] = useState<string[] | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const basePath = apiBasePath ?? `/api/experiments/${experimentId}`;
 
   // MVP progress tracking: manual checkboxes per step, persisted locally. The
   // chat is grounded in the protocol content itself, so it can respond
@@ -67,7 +78,7 @@ export function ProtocolCard({
   // Keyed by step INDEX, so a "Refine with AI" that reorders/changes step count
   // would otherwise misapply old checkmarks to unrelated new steps — store the
   // step text alongside the checked state and discard it if the steps changed.
-  const storageKey = `protocol-steps:${experimentId}`;
+  const storageKey = `protocol-steps:${basePath}`;
   const [checked, setChecked] = useState<Record<number, boolean>>({});
   useEffect(() => {
     try {
@@ -79,7 +90,7 @@ export function ProtocolCard({
       setChecked({});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [experimentId, protocolJson]);
+  }, [storageKey, protocolJson]);
   const toggleStep = (i: number) => {
     setChecked((prev) => {
       const next = { ...prev, [i]: !prev[i] };
@@ -98,7 +109,7 @@ export function ProtocolCard({
     setGenerating(true);
     setLastChanges(null);
     try {
-      const resp = await apiFetch(`/api/experiments/${experimentId}/protocol/generate`, {
+      const resp = await apiFetch(`${basePath}/protocol/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(refineNote.trim() ? { refine_note: refineNote.trim() } : {}),
@@ -143,7 +154,7 @@ export function ProtocolCard({
         reader.onerror = reject;
         reader.readAsDataURL(file);
       });
-      const resp = await apiFetch(`/api/experiments/${experimentId}/protocol/upload`, {
+      const resp = await apiFetch(`${basePath}/protocol/upload`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ file_content_b64: b64, file_name: file.name }),
@@ -171,33 +182,35 @@ export function ProtocolCard({
         <CardHeader className="py-4">
           <CardTitle className="text-lg flex items-center gap-2">
             <ClipboardList className="h-5 w-5 text-primary" />
-            No protocol yet
+            {noneTitle}
           </CardTitle>
-          <CardDescription>
-            Upload an existing SOP, or chat with the copilot below and generate one — it'll ask about materials, ranges, and controls if it needs more detail.
-          </CardDescription>
+          <CardDescription>{noneDescription}</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap gap-3">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".docx"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) handleUpload(f);
-            }}
-          />
-          <Button
-            type="button"
-            variant="outline"
-            className="gap-2"
-            disabled={uploading || generating}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-            {uploading ? "Reading document…" : "Upload SOP (.docx)"}
-          </Button>
+          {showUpload && (
+            <>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".docx"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) handleUpload(f);
+                }}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                className="gap-2"
+                disabled={uploading || generating}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
+                {uploading ? "Reading document…" : "Upload SOP (.docx)"}
+              </Button>
+            </>
+          )}
           <Button
             type="button"
             className="gap-2"

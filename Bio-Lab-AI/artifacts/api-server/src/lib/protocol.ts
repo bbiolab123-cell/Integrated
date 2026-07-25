@@ -1,6 +1,8 @@
 // Shared structured-protocol type + parser. Used by the protocol design/upload
-// routes (experiments.ts) to produce it, and by the chat route (gemini.ts) to
-// ground conversation once a protocol is finalized.
+// routes (experiments.ts and projects.ts) to produce it, and by the chat route
+// (gemini.ts) to ground conversation once a protocol is finalized.
+
+import { generateContentWithRetry } from "./aiRetry";
 
 export interface StructuredProtocol {
   objective: string;
@@ -57,4 +59,22 @@ export function parseStructuredProtocol(text: string): StructuredProtocol | null
   } catch {
     return null;
   }
+}
+
+// Shared call: ask Gemini to produce/refine a structured protocol (with its own
+// critique) and parse the result. Used by the experiment AI-design/.docx-upload
+// paths and the project-level protocol path so downstream storage/rendering
+// never needs to know the source.
+export async function structureProtocolWithAI(systemInstruction: string, userPrompt: string): Promise<StructuredProtocol | null> {
+  const response = await generateContentWithRetry({
+    model: "gemini-2.5-flash",
+    contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+    config: {
+      systemInstruction,
+      maxOutputTokens: 8192,
+      responseMimeType: "application/json",
+      thinkingConfig: { thinkingBudget: 0 },
+    },
+  });
+  return parseStructuredProtocol(response.text ?? "{}");
 }

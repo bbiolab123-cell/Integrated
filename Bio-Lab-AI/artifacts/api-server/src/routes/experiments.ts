@@ -9,7 +9,8 @@ import {
 } from "@workspace/api-zod";
 import { generateContentWithRetry, generateContentStreamWithRetry } from "../lib/aiRetry";
 import { analysisKnowledgeBlock, assayGuidanceBlock } from "../lib/assayKnowledge";
-import { PROTOCOL_JSON_FORMAT, parseStructuredProtocol, type StructuredProtocol } from "../lib/protocol";
+import { PROTOCOL_JSON_FORMAT, parseStructuredProtocol, structureProtocolWithAI } from "../lib/protocol";
+import { triggerProjectSynthesis } from "../lib/projectSynthesis";
 import { getRequestUserId } from "../lib/requestUser";
 import { aiRateLimiter } from "../middlewares/rateLimit";
 import { assertMaxChars } from "../lib/requestLimits";
@@ -361,6 +362,7 @@ router.post("/experiments/:id/data", async (req, res) => {
       .returning();
 
     if (!updated) return res.status(404).json({ error: "Experiment not found" });
+    triggerProjectSynthesis(updated.project_id, userId);
     return res.json(updated);
   } catch (err) {
     req.log.error({ err }, "Failed to attach data to experiment");
@@ -370,23 +372,6 @@ router.post("/experiments/:id/data", async (req, res) => {
     return res.status(400).json({ error: "Could not attach data. Upload a valid CSV, TSV, TXT, or XLSX export." });
   }
 });
-
-// Shared call: ask Gemini to produce/refine a structured protocol (with its own
-// critique) and parse the result. Used by both the AI-design and .docx-upload
-// paths so downstream storage/rendering never needs to know the source.
-async function structureProtocolWithAI(systemInstruction: string, userPrompt: string): Promise<StructuredProtocol | null> {
-  const response = await generateContentWithRetry({
-    model: "gemini-2.5-flash",
-    contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-    config: {
-      systemInstruction,
-      maxOutputTokens: 8192,
-      responseMimeType: "application/json",
-      thinkingConfig: { thinkingBudget: 0 },
-    },
-  });
-  return parseStructuredProtocol(response.text ?? "{}");
-}
 
 // Design-time protocol generation/refinement. Synthesizes a structured, bench-ready
 // protocol from the experiment's goal/context plus any prior chat discussion (the
@@ -689,6 +674,7 @@ ${relatedContext}`;
         .update(experiments)
         .set({ data_analysis_report: streamed, updated_at: new Date() })
         .where(and(eq(experiments.id, id), eq(experiments.user_id, userId)));
+      triggerProjectSynthesis(exp.project_id, userId);
       res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
     } else {
       res.write(`data: ${JSON.stringify({ error: "The AI returned an empty report (it may be rate-limited). Please try again." })}\n\n`);
