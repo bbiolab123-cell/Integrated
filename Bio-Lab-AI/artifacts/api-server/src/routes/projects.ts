@@ -1,9 +1,13 @@
 import { Router, type IRouter } from "express";
 import { eq, and, desc, sql } from "drizzle-orm";
-import { db, projects, experiments, projectDocuments } from "@workspace/db";
+import { db, projects, experiments, projectDocuments, tasks } from "@workspace/db";
 import { getRequestUserId } from "../lib/requestUser";
+import { decodeUpload, UploadInputError } from "../lib/uploadValidation";
+import mammoth from "mammoth";
+import pdfParse from "pdf-parse";
 
 const router: IRouter = Router();
+const MAX_DOC_CHARS = 200_000;
 
 // ── list the user's projects (with experiment counts) ──
 router.get("/projects", async (req, res) => {
@@ -90,6 +94,38 @@ router.get("/projects/:id", async (req, res) => {
   }
 });
 
+// ── all tasks across every experiment in this project ──
+router.get("/projects/:id/tasks", async (req, res) => {
+  try {
+    const userId = getRequestUserId(req);
+    const projectId = parseInt(req.params.id, 10);
+    if (!(await userOwnsProject(projectId, userId))) {
+      return res.status(404).json({ error: "Project not found" });
+    }
+    const rows = await db
+      .select({
+        id: tasks.id,
+        experiment_id: tasks.experiment_id,
+        experiment_name: experiments.name,
+        title: tasks.title,
+        description: tasks.description,
+        owner_name: tasks.owner_name,
+        due_date: tasks.due_date,
+        status: tasks.status,
+        priority: tasks.priority,
+        created_at: tasks.created_at,
+      })
+      .from(tasks)
+      .innerJoin(experiments, eq(experiments.id, tasks.experiment_id))
+      .where(and(eq(experiments.project_id, projectId), eq(tasks.user_id, userId)))
+      .orderBy(desc(tasks.created_at));
+    return res.json(rows);
+  } catch (err) {
+    req.log.error({ err }, "Failed to list project tasks");
+    return res.status(500).json({ error: "Failed to list project tasks" });
+  }
+});
+
 // ── update a project (name / goal / status) ──
 router.put("/projects/:id", async (req, res) => {
   try {
@@ -159,7 +195,6 @@ router.put("/experiments/:id/project", async (req, res) => {
 });
 
 // ── project context documents (lab notebook, protocols, notes) ──
-const MAX_DOC_CHARS = 200_000;
 
 async function userOwnsProject(projectId: number, userId: string): Promise<boolean> {
   const proj = await db
@@ -194,18 +229,61 @@ router.get("/projects/:id/documents", async (req, res) => {
   }
 });
 
+// Extract text from an uploaded .docx/.pdf, or pass plain text straight through.
+async function extractDocumentText(fileContentB64: string, fileName: string): Promise<string> {
+  const ext = fileName.split(".").pop()?.toLowerCase();
+  const buffer = decodeUpload(fileContentB64, fileName, {
+    allowedExt: ["txt", "md", "markdown", "csv", "tsv", "json", "log", "tab", "text", "docx", "pdf"],
+    typeErrorMessage: "Unsupported file type. Upload a text, .docx, or .pdf file.",
+  });
+  if (ext === "docx") {
+    const { value } = await mammoth.extractRawText({ buffer });
+    return value;
+  }
+  if (ext === "pdf") {
+    const { text } = await pdfParse(buffer);
+    return text;
+  }
+  if (buffer.includes(0)) {
+    throw new UploadInputError("The text upload contains binary data.");
+  }
+  return buffer.toString("utf-8");
+}
+
 router.post("/projects/:id/documents", async (req, res) => {
   try {
     const userId = getRequestUserId(req);
     const projectId = parseInt(req.params.id, 10);
-    const { name, content } = (req.body ?? {}) as { name?: unknown; content?: unknown };
+    const { name, content, file_content_b64, file_name } = (req.body ?? {}) as {
+      name?: unknown;
+      content?: unknown;
+      file_content_b64?: unknown;
+      file_name?: unknown;
+    };
     if (typeof name !== "string" || !name.trim()) {
       return res.status(400).json({ error: "A document name is required" });
     }
-    if (typeof content !== "string" || !content.trim()) {
+
+    let resolvedContent: string;
+    if (typeof file_content_b64 === "string" && file_content_b64 && typeof file_name === "string" && file_name) {
+      try {
+        resolvedContent = await extractDocumentText(file_content_b64, file_name);
+      } catch (err) {
+        if (err instanceof UploadInputError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
+        throw err;
+      }
+      if (!resolvedContent.trim()) {
+        return res.status(422).json({ error: "Couldn't read any text from this document. Make sure it isn't empty or a scanned image." });
+      }
+    } else if (typeof content === "string" && content.trim()) {
+      resolvedContent = content;
+    } else {
       return res.status(400).json({ error: "Document content is empty" });
     }
-    if (content.length > MAX_DOC_CHARS) {
+
+    if (resolvedContent.length > MAX_DOC_CHARS) {
       return res.status(413).json({ error: `Document too large (max ${MAX_DOC_CHARS} characters)` });
     }
     if (!(await userOwnsProject(projectId, userId))) {
@@ -213,12 +291,31 @@ router.post("/projects/:id/documents", async (req, res) => {
     }
     const inserted = await db
       .insert(projectDocuments)
-      .values({ user_id: userId, project_id: projectId, name: name.trim(), content })
+      .values({ user_id: userId, project_id: projectId, name: name.trim(), content: resolvedContent })
       .returning({ id: projectDocuments.id, name: projectDocuments.name, created_at: projectDocuments.created_at });
     return res.status(201).json(inserted[0]);
   } catch (err) {
     req.log.error({ err }, "Failed to add project document");
     return res.status(400).json({ error: "Failed to add project document" });
+  }
+});
+
+router.get("/project-documents/:docId", async (req, res) => {
+  try {
+    const userId = getRequestUserId(req);
+    const docId = parseInt(req.params.docId, 10);
+    const rows = await db
+      .select()
+      .from(projectDocuments)
+      .where(and(eq(projectDocuments.id, docId), eq(projectDocuments.user_id, userId)))
+      .limit(1);
+    if (!rows[0]) {
+      return res.status(404).json({ error: "Document not found" });
+    }
+    return res.json(rows[0]);
+  } catch (err) {
+    req.log.error({ err }, "Failed to get project document");
+    return res.status(500).json({ error: "Failed to get document" });
   }
 });
 
