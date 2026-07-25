@@ -61,6 +61,20 @@ export function parseStructuredProtocol(text: string): StructuredProtocol | null
   }
 }
 
+export function protocolToMarkdown(protocol: StructuredProtocol): string {
+  const section = (title: string, items: string[]) => (items.length ? `### ${title}\n${items.map((i) => `- ${i}`).join("\n")}\n\n` : "");
+  return [
+    protocol.objective ? `**Objective:** ${protocol.objective}\n\n` : "",
+    section("Materials", protocol.materials),
+    section("Controls", protocol.controls),
+    protocol.plate_layout ? `### Plate layout\n${protocol.plate_layout}\n\n` : "",
+    protocol.steps.length ? `### Steps\n${protocol.steps.map((s, i) => `${i + 1}. ${s}`).join("\n")}\n\n` : "",
+    protocol.expected_readout ? `### Expected readout\n${protocol.expected_readout}\n\n` : "",
+    protocol.suggested_analysis ? `### Suggested analysis\n${protocol.suggested_analysis}\n\n` : "",
+    section("AI review notes", protocol.review_notes),
+  ].join("");
+}
+
 // Shared call: ask Gemini to produce/refine a structured protocol (with its own
 // critique) and parse the result. Used by the experiment AI-design/.docx-upload
 // paths and the project-level protocol path so downstream storage/rendering

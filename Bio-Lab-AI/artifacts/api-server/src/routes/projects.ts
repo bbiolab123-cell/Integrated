@@ -3,7 +3,8 @@ import { eq, and, desc, sql } from "drizzle-orm";
 import { db, projects, experiments, projectDocuments, tasks } from "@workspace/db";
 import { getRequestUserId } from "../lib/requestUser";
 import { decodeUpload, UploadInputError } from "../lib/uploadValidation";
-import { PROTOCOL_JSON_FORMAT, parseStructuredProtocol, structureProtocolWithAI } from "../lib/protocol";
+import { PROTOCOL_JSON_FORMAT, parseStructuredProtocol, protocolToMarkdown, structureProtocolWithAI } from "../lib/protocol";
+import archiver from "archiver";
 import { aiRateLimiter } from "../middlewares/rateLimit";
 import { assertMaxChars } from "../lib/requestLimits";
 import mammoth from "mammoth";
@@ -446,6 +447,98 @@ router.delete("/project-documents/:docId", async (req, res) => {
     return res.status(204).send();
   } catch (err) {
     return res.status(500).json({ error: "Failed to delete document" });
+  }
+});
+
+function safeSegment(name: string, fallback: string): string {
+  const cleaned = name.trim().replace(/[\\/:*?"<>| -]/g, "-").slice(0, 100);
+  return cleaned || fallback;
+}
+
+// ── export everything about a project as a .zip: a project summary, its
+// context documents, and one folder per experiment with that experiment's
+// protocol/report/raw data. Plain text/markdown/JSON, not rendered PDFs —
+// server-side PDF rendering is a separate, not-yet-built feature. ──
+router.get("/projects/:id/export.zip", async (req, res) => {
+  try {
+    const userId = getRequestUserId(req);
+    const projectId = parseInt(req.params.id, 10);
+
+    const rows = await db.select().from(projects).where(and(eq(projects.id, projectId), eq(projects.user_id, userId))).limit(1);
+    const project = rows[0];
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const exps = await db
+      .select()
+      .from(experiments)
+      .where(and(eq(experiments.project_id, projectId), eq(experiments.user_id, userId)))
+      .orderBy(desc(experiments.created_at));
+
+    const docs = await db
+      .select({ name: projectDocuments.name, content: projectDocuments.content })
+      .from(projectDocuments)
+      .where(and(eq(projectDocuments.project_id, projectId), eq(projectDocuments.user_id, userId)));
+
+    const projectTasks = await db
+      .select({ title: tasks.title, status: tasks.status, priority: tasks.priority, experiment_id: tasks.experiment_id })
+      .from(tasks)
+      .innerJoin(experiments, eq(experiments.id, tasks.experiment_id))
+      .where(and(eq(experiments.project_id, projectId), eq(tasks.user_id, userId)));
+
+    const zipName = `${safeSegment(project.name, "project")}.zip`;
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="${zipName}"`);
+
+    const archive = archiver("zip", { zlib: { level: 9 } });
+    archive.on("error", (err: Error) => {
+      req.log.error({ err }, "Failed to build project export zip");
+      if (!res.headersSent) res.status(500);
+      res.end();
+    });
+    archive.pipe(res);
+
+    const projectProtocol = project.protocol_json ? parseStructuredProtocol(project.protocol_json) : null;
+    const taskLines = projectTasks.length
+      ? projectTasks.map((t) => `- [${t.status}] (${t.priority}) ${t.title}`).join("\n")
+      : "(no tasks)";
+    const summaryMd = [
+      `# ${project.name}\n`,
+      `**Status:** ${project.status}\n`,
+      project.goal ? `**Goal:** ${project.goal}\n` : "",
+      `\n## Plan\n\n${projectProtocol ? protocolToMarkdown(projectProtocol) : "(no project plan generated yet)\n"}`,
+      `\n## Experiments\n${exps.length ? exps.map((e) => `- ${e.name} (${e.date}, ${e.assay_type}, status: ${e.status})`).join("\n") : "(none)"}\n`,
+      `\n## Tasks\n${taskLines}\n`,
+      `\n## AI synthesis${project.ai_summary_generated_at ? ` (as of ${project.ai_summary_generated_at.toISOString()})` : ""}\n\n${project.ai_summary ?? "(no synthesis generated yet)"}\n`,
+    ].join("");
+    archive.append(summaryMd, { name: "project-summary.md" });
+
+    docs.forEach((d, i) => {
+      archive.append(d.content, { name: `context-documents/${safeSegment(d.name, `document-${i + 1}`)}.txt` });
+    });
+
+    exps.forEach((e, i) => {
+      const dir = `experiments/${safeSegment(e.name, `experiment-${i + 1}`)}`;
+      const expProtocol = e.protocol_json ? parseStructuredProtocol(e.protocol_json) : null;
+      const expSummaryMd = [
+        `# ${e.name}\n`,
+        `**Date:** ${e.date}  \n**Assay type:** ${e.assay_type}  \n**Instrument:** ${e.instrument}  \n**Status:** ${e.status}\n`,
+        e.notes ? `\n**Notes:** ${e.notes}\n` : "",
+        `\n## Protocol\n\n${expProtocol ? protocolToMarkdown(expProtocol) : "(no protocol generated yet)\n"}`,
+        `\n## AI summary\n\n${e.ai_summary ?? "(not analyzed yet)"}\n`,
+        `\n## Data analysis report\n\n${e.data_analysis_report ?? "(no report generated yet)"}\n`,
+      ].join("");
+      archive.append(expSummaryMd, { name: `${dir}/summary.md` });
+      if (e.raw_data_json) {
+        archive.append(e.raw_data_json, { name: `${dir}/raw_data.json` });
+      }
+    });
+
+    await archive.finalize();
+    return;
+  } catch (err) {
+    req.log.error({ err }, "Failed to export project");
+    if (!res.headersSent) res.status(500).json({ error: "Failed to export project" });
+    return;
   }
 });
 

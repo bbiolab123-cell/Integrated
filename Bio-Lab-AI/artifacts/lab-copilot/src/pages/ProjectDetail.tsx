@@ -3,7 +3,7 @@ import { useParams, Link } from "wouter";
 import { apiFetch } from "@/lib/apiFetch";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { FolderKanban, FlaskConical, Calendar, Microscope, Plus, Pencil, Trash2, Loader2, ArrowLeft, X, FileText, Upload, Sparkles, Eye } from "lucide-react";
+import { FolderKanban, FlaskConical, Calendar, Microscope, Plus, Pencil, Trash2, Loader2, ArrowLeft, X, FileText, Upload, Sparkles, Eye, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -77,6 +77,7 @@ export function ProjectDetail() {
   const [docContent, setDocContent] = useState("");
   const [uploadingFiles, setUploadingFiles] = useState(false);
   const [viewDocId, setViewDocId] = useState<number | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   const { data: project, isLoading } = useQuery<ProjectDetailData>({
     queryKey: ["project", projectId],
@@ -260,6 +261,24 @@ export function ProjectDetail() {
   const inProjectIds = new Set(project.experiments.map((e) => e.id));
   const assignable = (allExperiments ?? []).filter((e) => !inProjectIds.has(e.id));
 
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const res = await apiFetch(`/api/projects/${project.id}/export.zip`);
+      if (!res.ok) throw new Error("Export failed");
+      const blob = await res.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${project.name.replace(/\s+/g, "_")}.zip`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch {
+      toast({ title: "Error", description: "Failed to export project.", variant: "destructive" });
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div className="lab-page space-y-7 pb-12" data-accent="violet">
       <LabPageHeader
@@ -273,6 +292,15 @@ export function ProjectDetail() {
           <Link href="/projects">
             <Button variant="ghost" className="gap-2"><ArrowLeft className="h-4 w-4" /> All projects</Button>
           </Link>
+          <Button
+            variant="outline"
+            className="gap-2"
+            disabled={exporting}
+            onClick={handleExport}
+          >
+            {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            Export
+          </Button>
           <Button
             variant="outline"
             className="gap-2"
