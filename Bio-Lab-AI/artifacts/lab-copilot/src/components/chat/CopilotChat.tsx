@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { apiFetch } from "@/lib/apiFetch";
 import { Send, Bot, User, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { useListGeminiMessages, getListGeminiMessagesQueryKey } from "@workspace
 import { useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { sanitizeChatMessages } from "@/lib/chatMessages";
 
 type CopilotChatProps = {
   conversationId: number;
@@ -21,12 +22,13 @@ export function CopilotChat({ conversationId }: CopilotChatProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
 
-  const { data: messages = [], isLoading } = useListGeminiMessages(conversationId, {
+  const { data: rawMessages, isLoading } = useListGeminiMessages(conversationId, {
     query: {
       enabled: !!conversationId,
       queryKey: getListGeminiMessagesQueryKey(conversationId)
     }
   });
+  const messages = useMemo(() => sanitizeChatMessages(rawMessages), [rawMessages]);
 
   const scrollToBottom = () => {
     if (scrollRef.current) {

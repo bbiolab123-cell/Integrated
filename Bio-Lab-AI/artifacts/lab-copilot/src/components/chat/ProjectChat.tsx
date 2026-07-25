@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { apiFetch } from "@/lib/apiFetch";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Send, Bot, User, Loader2, Sparkles } from "lucide-react";
@@ -7,12 +7,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-
-interface ChatMessage {
-  id: number;
-  role: string;
-  content: string;
-}
+import { sanitizeChatMessages, type SafeChatMessage } from "@/lib/chatMessages";
 
 const STARTERS = [
   "What does the data across this project tell us so far?",
@@ -29,11 +24,16 @@ export function ProjectChat({ projectId }: { projectId: number }) {
   const queryClient = useQueryClient();
   const queryKey = ["project-messages", projectId];
 
-  const { data: messages = [], isLoading } = useQuery<ChatMessage[]>({
+  const { data: rawMessages, isLoading } = useQuery<unknown>({
     queryKey,
-    queryFn: () => apiFetch(`/api/projects/${projectId}/messages`).then((r) => r.json()),
+    queryFn: async () => {
+      const res = await apiFetch(`/api/projects/${projectId}/messages`);
+      if (!res.ok) throw new Error("Failed to load messages");
+      return res.json().catch(() => []);
+    },
     enabled: !!projectId,
   });
+  const messages = useMemo(() => sanitizeChatMessages(rawMessages), [rawMessages]);
 
   const scrollToBottom = () => {
     const vp = scrollRef.current?.querySelector("[data-radix-scroll-area-viewport]");
@@ -49,8 +49,8 @@ export function ProjectChat({ projectId }: { projectId: number }) {
     setAssistantBuffer("");
     setChatError(null);
 
-    queryClient.setQueryData(queryKey, (old: ChatMessage[] | undefined) => [
-      ...(old || []),
+    queryClient.setQueryData(queryKey, (old: SafeChatMessage[] | undefined) => [
+      ...sanitizeChatMessages(old),
       { id: Date.now(), role: "user", content },
     ]);
 
