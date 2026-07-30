@@ -64,6 +64,8 @@ jobs:
 
       - name: Test AI and training contracts
         run: pnpm test
+        env:
+          DATABASE_URL: postgresql://test:test@127.0.0.1:5432/biolab_test
 
       - name: Build API artifact
         run: pnpm --filter @workspace/api-server run build
