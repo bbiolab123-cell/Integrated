@@ -25,6 +25,11 @@ REQUIRED_SNIPPETS = {
     "completion_only_loss=True",
     "bnb_4bit_quant_type='nf4'",
     "target_modules=['q_proj', 'v_proj']",
+    "TRAINING_DATA_MODE = 'public_bootstrap'",
+    "public_licensed",
+    "build_public_bootstrap_dataset.py",
+    "PUBLIC_BOOTSTRAP_SCRIPT_SHA256",
+    "public-bootstrap-source-manifest.json",
     "dataset_sha256",
     "privacy_findings",
     "overlong_count",
@@ -60,6 +65,8 @@ def main() -> int:
     missing = sorted(snippet for snippet in REQUIRED_SNIPPETS if snippet not in source)
     if missing:
         fail(f"Notebook lost required training gates: {missing}")
+    if "TO_BE_REPLACED" in source:
+        fail("Notebook contains an unresolved integrity placeholder.")
 
     for label, pattern in FORBIDDEN_SECRET_PATTERNS.items():
         if pattern.search(source):

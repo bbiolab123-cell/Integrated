@@ -5,6 +5,9 @@ dist
 tmp
 out-tsc
 *.tsbuildinfo
+__pycache__/
+training/biolab-public-bootstrap.jsonl
+training/biolab-public-bootstrap-manifest.json
 .expo
 .expo-shared
 

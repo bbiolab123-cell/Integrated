@@ -2,8 +2,15 @@
 
 The held-out `test` split is never used for gradient updates, checkpoint
 selection, prompt tuning, or repeated manual editing. It contains independent
-project/experiment groups and every website AI task. Human-approved Bio-Lab
-corrections are the reference; Gemini and ChatGPT outputs are prohibited.
+source groups and every website AI task. In `human_export` mode,
+human-approved Bio-Lab corrections are the reference; Gemini and ChatGPT
+outputs are prohibited. In `public_bootstrap` mode, the reference completions
+come only from pinned public-licensed datasets and their source manifest.
+
+Public-bootstrap training is pre-release initialization. It does not waive the
+owner's blind scientific review, the 15-point improvement requirement, or any
+production contract gate, and it must not be represented as site-specific
+human feedback.
 
 ## Blind scientific review
 
