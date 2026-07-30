@@ -3,12 +3,14 @@ import { useParams, Link } from "wouter";
 import { apiFetch } from "@/lib/apiFetch";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { FolderKanban, FlaskConical, Calendar, Microscope, Plus, Pencil, Trash2, Loader2, ArrowLeft, X, FileText, Upload, Sparkles } from "lucide-react";
+import { FolderKanban, FlaskConical, Calendar, Microscope, Plus, Pencil, Trash2, Loader2, ArrowLeft, X, FileText, Upload, Sparkles, Eye, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { CheckSquare, Circle, CheckCircle2, Clock } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -25,6 +27,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { ProjectChat } from "@/components/chat/ProjectChat";
+import { ProtocolCard } from "@/components/experiment/ProtocolCard";
 import { LabConversation, LabPageHeader, LabPanel, LabSectionHeader } from "@/components/lab/LivingLab";
 import { ImproveAiDialog } from "@/components/ai/ImproveAiDialog";
 
@@ -42,9 +45,38 @@ interface ProjectDetailData {
   name: string;
   goal: string | null;
   status: string;
+  protocol_json: string | null;
   ai_summary: string | null;
   ai_summary_request_id: string | null;
+  ai_summary_generated_at: string | null;
+  protocol_ai_request_id: string | null;
   experiments: ExperimentRef[];
+}
+
+interface ProjectTask {
+  id: number;
+  experiment_id: number;
+  experiment_name: string;
+  title: string;
+  description: string | null;
+  owner_name: string | null;
+  due_date: string | null;
+  status: string;
+  priority: string;
+}
+
+// Every read query below used to do `apiFetch(url).then(r => r.json())` with
+// no res.ok check — a 404/500 (e.g. the project not existing, or a backend
+// error) resolved as if it were successful data instead of rejecting, so
+// rendering code then crashed trying to read fields (like .experiments) off
+// an {error: "..."} object instead of showing a proper error state.
+async function fetchJson<T>(url: string): Promise<T> {
+  const res = await apiFetch(url);
+  if (!res.ok) {
+    const body = await res.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error || `Request failed (${res.status})`);
+  }
+  return res.json();
 }
 
 export function ProjectDetail() {
@@ -60,17 +92,21 @@ export function ProjectDetail() {
   const [docOpen, setDocOpen] = useState(false);
   const [docName, setDocName] = useState("");
   const [docContent, setDocContent] = useState("");
+  const [uploadingFiles, setUploadingFiles] = useState(false);
+  const [viewDocId, setViewDocId] = useState<number | null>(null);
+  const [exporting, setExporting] = useState(false);
 
-  const { data: project, isLoading } = useQuery<ProjectDetailData>({
+  const { data: project, isLoading, isError, error, refetch } = useQuery<ProjectDetailData>({
     queryKey: ["project", projectId],
-    queryFn: () => apiFetch(`/api/projects/${projectId}`).then((r) => r.json()),
+    queryFn: () => fetchJson<ProjectDetailData>(`/api/projects/${projectId}`),
     enabled: !!projectId,
+    retry: false,
   });
 
   // All of the user's experiments, to offer the ones not yet in this project.
   const { data: allExperiments } = useQuery<ExperimentRef[]>({
     queryKey: ["experiments-for-project"],
-    queryFn: () => apiFetch("/api/experiments").then((r) => r.json()),
+    queryFn: () => fetchJson<ExperimentRef[]>("/api/experiments"),
   });
 
   const invalidate = () => {
@@ -124,10 +160,16 @@ export function ProjectDetail() {
     onError: () => toast({ title: "Error", description: "Failed to delete project.", variant: "destructive" }),
   });
 
+  const { data: projectTasks } = useQuery<ProjectTask[]>({
+    queryKey: ["project-tasks", projectId],
+    queryFn: () => fetchJson<ProjectTask[]>(`/api/projects/${projectId}/tasks`),
+    enabled: !!projectId && !isError,
+  });
+
   const { data: documents } = useQuery<{ id: number; name: string; chars: number; created_at: string }[]>({
     queryKey: ["project-docs", projectId],
-    queryFn: () => apiFetch(`/api/projects/${projectId}/documents`).then((r) => r.json()),
-    enabled: !!projectId,
+    queryFn: () => fetchJson<{ id: number; name: string; chars: number; created_at: string }[]>(`/api/projects/${projectId}/documents`),
+    enabled: !!projectId && !isError,
   });
 
   const addDocMutation = useMutation({
@@ -151,11 +193,17 @@ export function ProjectDetail() {
     onError: () => toast({ title: "Error", description: "Failed to delete.", variant: "destructive" }),
   });
 
+  const { data: viewedDoc, isLoading: viewedDocLoading } = useQuery<{ id: number; name: string; content: string }>({
+    queryKey: ["project-doc", viewDocId],
+    queryFn: () => fetchJson<{ id: number; name: string; content: string }>(`/api/project-documents/${viewDocId}`),
+    enabled: viewDocId !== null,
+  });
+
   const readFile = (file: File) => {
     if (!/\.(txt|md|markdown|csv|tsv|json|log|tab|text)$/i.test(file.name)) {
       toast({
-        title: "Text files only (for now)",
-        description: "Upload .txt, .md, .csv, .tsv or .json — or paste text. PDF/image support is coming.",
+        title: "Unsupported for the paste box",
+        description: "Use \"Upload files\" below for .docx/.pdf, or paste text here.",
         variant: "destructive",
       });
       return;
@@ -168,11 +216,86 @@ export function ProjectDetail() {
     reader.readAsText(file);
   };
 
+  const fileToBase64 = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result ?? "");
+        resolve(result.split(",")[1] ?? "");
+      };
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+
+  // Returns the number of documents actually created (a plain file makes one;
+  // a .zip or a folder-picker's files can each explode into many server-side).
+  // 0 means this file failed outright.
+  const uploadOneFile = async (file: File): Promise<number> => {
+    // A folder picker's files carry their path here (e.g. "notes/week1.txt") —
+    // preserve it in the name, same as how a zip's internal paths are kept.
+    const relativeName = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+    const isZip = /\.zip$/i.test(file.name);
+    const isPlainText = !isZip && /\.(txt|md|markdown|csv|tsv|json|log|tab|text)$/i.test(file.name);
+    const payload = isPlainText
+      ? { name: relativeName, content: await file.text() }
+      : { name: relativeName, file_content_b64: await fileToBase64(file), file_name: file.name };
+    const res = await apiFetch(`/api/projects/${projectId}/documents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) return 0;
+    if (isZip) {
+      const data = await res.json().catch(() => null) as { count?: number } | null;
+      return data?.count ?? 0;
+    }
+    return 1;
+  };
+
+  const handleFilesSelected = async (files: FileList) => {
+    setUploadingFiles(true);
+    let filesSucceeded = 0;
+    let docsCreated = 0;
+    for (const file of Array.from(files)) {
+      try {
+        const created = await uploadOneFile(file);
+        if (created > 0) {
+          filesSucceeded += 1;
+          docsCreated += created;
+        }
+      } catch {
+        // counted as a failure below via filesSucceeded < files.length
+      }
+    }
+    setUploadingFiles(false);
+    queryClient.invalidateQueries({ queryKey: ["project-docs", projectId] });
+    if (filesSucceeded === files.length) {
+      toast({ title: docsCreated === 1 ? "Context added" : `${docsCreated} document${docsCreated === 1 ? "" : "s"} added`, description: "The project copilot will use it." });
+    } else {
+      toast({
+        title: "Some files failed",
+        description: `${filesSucceeded} of ${files.length} uploaded (${docsCreated} document${docsCreated === 1 ? "" : "s"} total). Unsupported or unreadable files were skipped.`,
+        variant: "destructive",
+      });
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="space-y-6 max-w-5xl mx-auto">
         <div className="h-10 w-64 bg-muted animate-pulse rounded" />
         <div className="h-40 bg-muted animate-pulse rounded-xl" />
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div className="text-center py-12 space-y-3">
+        <p className="font-mono text-sm text-destructive">
+          {error instanceof Error ? error.message : "Couldn't load this project."}
+        </p>
+        <Button variant="outline" size="sm" onClick={() => refetch()}>Retry</Button>
       </div>
     );
   }
@@ -183,6 +306,24 @@ export function ProjectDetail() {
 
   const inProjectIds = new Set(project.experiments.map((e) => e.id));
   const assignable = (allExperiments ?? []).filter((e) => !inProjectIds.has(e.id));
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const res = await apiFetch(`/api/projects/${project.id}/export.zip`);
+      if (!res.ok) throw new Error("Export failed");
+      const blob = await res.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${project.name.replace(/\s+/g, "_")}.zip`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch {
+      toast({ title: "Error", description: "Failed to export project.", variant: "destructive" });
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <div className="lab-page space-y-7 pb-12" data-accent="violet">
@@ -197,6 +338,15 @@ export function ProjectDetail() {
           <Link href="/projects">
             <Button variant="ghost" className="gap-2"><ArrowLeft className="h-4 w-4" /> All projects</Button>
           </Link>
+          <Button
+            variant="outline"
+            className="gap-2"
+            disabled={exporting}
+            onClick={handleExport}
+          >
+            {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            Export
+          </Button>
           <Button
             variant="outline"
             className="gap-2"
@@ -238,10 +388,18 @@ export function ProjectDetail() {
       <Card className="lab-panel overflow-hidden rounded-[1.8rem] border-primary/20">
         <CardHeader className="py-4 border-b">
           <div className="flex items-center justify-between gap-3">
-            <CardTitle className="text-lg flex items-center gap-2">
-              <Sparkles className="h-5 w-5 text-primary" />
-              Project synthesis
-            </CardTitle>
+            <div>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Sparkles className="h-5 w-5 text-primary" />
+                Project synthesis
+              </CardTitle>
+              {project.ai_summary_generated_at && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  Last updated {(() => { try { return format(parseISO(project.ai_summary_generated_at!), "MMM d, h:mm a"); } catch { return project.ai_summary_generated_at; } })()}
+                  {" — refreshes automatically when an experiment gets new data"}
+                </p>
+              )}
+            </div>
             <Button
               variant="outline"
               size="sm"
@@ -339,6 +497,53 @@ export function ProjectDetail() {
         </div>
       )}
 
+      {/* Project-level plan — one overarching protocol for the whole project */}
+      <div className="pt-2">
+        <ProtocolCard
+          experimentId={project.id}
+          protocolJson={project.protocol_json}
+          protocolRequestId={project.protocol_ai_request_id}
+          apiBasePath={`/api/projects/${project.id}`}
+          showUpload={false}
+          noneTitle="No project plan yet"
+          noneDescription="Generate an overarching plan with AI — aims, phases, and how the experiments in this project build on each other. Distinct from each experiment's own SOP."
+          onUpdated={invalidate}
+        />
+      </div>
+
+      {/* Tasks across this project's experiments */}
+      <div className="space-y-3 pt-2">
+        <h2 className="text-sm font-semibold text-muted-foreground flex items-center gap-2">
+          <CheckSquare className="h-4 w-4" /> Tasks across this project
+        </h2>
+        {!projectTasks || projectTasks.length === 0 ? (
+          <p className="text-xs text-muted-foreground italic">
+            No tasks yet. Tasks created on any experiment in this project will show up here.
+          </p>
+        ) : (
+          <div className="grid gap-2">
+            {projectTasks.map((t) => {
+              const Icon = t.status === "done" ? CheckCircle2 : t.status === "in_progress" ? Clock : Circle;
+              const color = t.status === "done" ? "text-emerald-400" : t.status === "in_progress" ? "text-cyan-400" : "text-muted-foreground";
+              return (
+                <div key={t.id} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm">
+                  <span className="flex items-center gap-2 min-w-0">
+                    <Icon className={`h-3.5 w-3.5 flex-shrink-0 ${color}`} />
+                    <span className={`truncate ${t.status === "done" ? "line-through text-muted-foreground" : ""}`}>{t.title}</span>
+                    <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-mono flex-shrink-0">{t.priority}</Badge>
+                  </span>
+                  <Link href={`/experiments/${t.experiment_id}`}>
+                    <span className="text-xs text-muted-foreground font-mono flex-shrink-0 hover:text-primary transition-colors cursor-pointer truncate max-w-[160px]">
+                      {t.experiment_name}
+                    </span>
+                  </Link>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {/* Context & notes */}
       <div className="space-y-4 pt-2">
         <LabSectionHeader eyebrow="Context fabric" title="Give the project a memory." description="Notebook entries, protocols, and observations stay available to the project copilot alongside the experimental record." />
@@ -363,15 +568,26 @@ export function ProjectDetail() {
                   <span className="truncate">{d.name}</span>
                   <span className="text-xs text-muted-foreground font-mono flex-shrink-0">{d.chars.toLocaleString()} chars</span>
                 </span>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 text-muted-foreground hover:text-destructive flex-shrink-0"
-                  title="Remove"
-                  onClick={() => deleteDocMutation.mutate(d.id)}
-                >
-                  <X className="h-3.5 w-3.5" />
-                </Button>
+                <span className="flex items-center gap-1 flex-shrink-0">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                    title="View"
+                    onClick={() => setViewDocId(d.id)}
+                  >
+                    <Eye className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                    title="Remove"
+                    onClick={() => deleteDocMutation.mutate(d.id)}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </Button>
+                </span>
               </div>
             ))}
           </div>
@@ -403,19 +619,41 @@ export function ProjectDetail() {
                 placeholder="Paste notes, a protocol, observations… or upload a text file below."
               />
             </div>
-            <label className="flex items-center gap-2 text-sm text-primary cursor-pointer hover:underline w-fit">
-              <Upload className="h-4 w-4" />
-              Upload a text file (.txt, .md, .csv, .json)
-              <input
-                type="file"
-                accept=".txt,.md,.markdown,.csv,.tsv,.json,.log,.tab,.text"
-                className="hidden"
-                onChange={(e) => { const f = e.target.files?.[0]; if (f) readFile(f); e.target.value = ""; }}
-              />
-            </label>
+            <div className="border-t pt-4 space-y-2">
+              <Label className="text-xs text-muted-foreground">Or upload files, a .zip, or a whole folder at once</Label>
+              <div className="flex flex-wrap gap-4">
+                <label className={`flex items-center gap-2 text-sm w-fit ${uploadingFiles ? "text-muted-foreground" : "text-primary cursor-pointer hover:underline"}`}>
+                  {uploadingFiles ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                  {uploadingFiles ? "Uploading…" : "Upload files or a .zip"}
+                  <input
+                    type="file"
+                    multiple
+                    disabled={uploadingFiles}
+                    accept=".txt,.md,.markdown,.csv,.tsv,.json,.log,.tab,.text,.docx,.pdf,.zip"
+                    className="hidden"
+                    onChange={(e) => { const files = e.target.files; if (files?.length) void handleFilesSelected(files); e.target.value = ""; }}
+                  />
+                </label>
+                <label className={`flex items-center gap-2 text-sm w-fit ${uploadingFiles ? "text-muted-foreground" : "text-primary cursor-pointer hover:underline"}`}>
+                  {uploadingFiles ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                  {uploadingFiles ? "Uploading…" : "Upload a folder"}
+                  <input
+                    type="file"
+                    multiple
+                    disabled={uploadingFiles}
+                    className="hidden"
+                    // webkitdirectory/directory aren't in React's DOM typings —
+                    // set them as plain attributes so the browser shows a folder
+                    // picker instead of a file picker.
+                    {...{ webkitdirectory: "", directory: "" }}
+                    onChange={(e) => { const files = e.target.files; if (files?.length) void handleFilesSelected(files); e.target.value = ""; }}
+                  />
+                </label>
+              </div>
+            </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDocOpen(false)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setDocOpen(false)}>Close</Button>
             <Button
               disabled={!docName.trim() || !docContent.trim() || addDocMutation.isPending}
               onClick={() => addDocMutation.mutate({ name: docName.trim(), content: docContent })}
@@ -423,6 +661,25 @@ export function ProjectDetail() {
               {addDocMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Add context
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* View document dialog */}
+      <Dialog open={viewDocId !== null} onOpenChange={(v) => { if (!v) setViewDocId(null); }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{viewedDoc?.name ?? "Document"}</DialogTitle>
+          </DialogHeader>
+          {viewedDocLoading ? (
+            <div className="flex justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
+          ) : (
+            <pre className="max-h-[60vh] overflow-y-auto whitespace-pre-wrap text-sm bg-muted/40 rounded-md p-4 font-sans">
+              {viewedDoc?.content}
+            </pre>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setViewDocId(null)}>Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

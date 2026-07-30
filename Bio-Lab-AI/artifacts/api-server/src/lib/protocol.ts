@@ -1,6 +1,14 @@
 // Shared structured-protocol type + parser. Used by the protocol design/upload
-// routes (experiments.ts) to produce it, and by the provider-neutral chat route to
-// ground conversation once a protocol is finalized.
+// routes (experiments.ts and projects.ts) to produce it, and by the
+// provider-neutral chat route to ground conversation once a protocol is
+// finalized.
+
+import { z } from "zod";
+// Import directly from the specific submodules (not the "./ai" barrel) — that
+// barrel re-exports ./ai/context, which itself imports parseStructuredProtocol
+// from this file; going through it here would create a circular import.
+import { generateAiJson, type AiCallContext } from "./ai/service";
+import { numericAuditNotice } from "./ai/numericAudit";
 
 export interface StructuredProtocol {
   objective: string;
@@ -57,4 +65,52 @@ export function parseStructuredProtocol(text: string): StructuredProtocol | null
   } catch {
     return null;
   }
+}
+
+export function protocolToMarkdown(protocol: StructuredProtocol): string {
+  const section = (title: string, items: string[]) => (items.length ? `### ${title}\n${items.map((i) => `- ${i}`).join("\n")}\n\n` : "");
+  return [
+    protocol.objective ? `**Objective:** ${protocol.objective}\n\n` : "",
+    section("Materials", protocol.materials),
+    section("Controls", protocol.controls),
+    protocol.plate_layout ? `### Plate layout\n${protocol.plate_layout}\n\n` : "",
+    protocol.steps.length ? `### Steps\n${protocol.steps.map((s, i) => `${i + 1}. ${s}`).join("\n")}\n\n` : "",
+    protocol.expected_readout ? `### Expected readout\n${protocol.expected_readout}\n\n` : "",
+    protocol.suggested_analysis ? `### Suggested analysis\n${protocol.suggested_analysis}\n\n` : "",
+    section("AI review notes", protocol.review_notes),
+  ].join("");
+}
+
+const StructuredProtocolSchema = z.object({
+  objective: z.string(),
+  materials: z.array(z.string()),
+  controls: z.array(z.string()),
+  plate_layout: z.string(),
+  steps: z.array(z.string()),
+  expected_readout: z.string(),
+  suggested_analysis: z.string(),
+  review_notes: z.array(z.string()),
+  changes_summary: z.array(z.string()),
+});
+
+// Shared call: ask the configured provider to produce/refine a structured
+// protocol (with its own critique) and parse the result. Used by both the
+// experiment AI-design/.docx-upload paths and the project-level protocol
+// path so downstream storage/rendering never needs to know the source.
+export async function structureProtocolWithAI(
+  systemInstruction: string,
+  userPrompt: string,
+  context: AiCallContext,
+): Promise<{ protocol: StructuredProtocol; requestId: string }> {
+  const response = await generateAiJson({
+    ...context,
+    systemInstruction,
+    messages: [{ role: "user", content: userPrompt }],
+    maxTokens: 4096,
+  }, StructuredProtocolSchema);
+  if (context.taskType === "sop_structuring") {
+    const auditNotice = numericAuditNotice(JSON.stringify(response.data), `${systemInstruction}\n${userPrompt}`);
+    if (auditNotice) response.data.review_notes.push(auditNotice);
+  }
+  return { protocol: response.data, requestId: response.requestId };
 }
