@@ -9,7 +9,13 @@ import archiver from "archiver";
 import { aiDailyQuota, aiRateLimiter } from "../middlewares/rateLimit";
 import { assertMaxChars } from "../lib/requestLimits";
 import mammoth from "mammoth";
-import pdfParse from "pdf-parse";
+// pdf-parse's own top-level index.js runs a debug self-test (reading a bundled
+// test PDF) whenever it can't detect a CJS `module.parent` — which is always,
+// once esbuild bundles this into a single file. That crashes the whole server
+// at startup. Importing the internal implementation module skips that file
+// entirely; it's plain CJS with no exports map, so the subpath is stable.
+// (Type declared in src/types/pdf-parse-lib.d.ts.)
+import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import AdmZip from "adm-zip";
 
 const router: IRouter = Router();
