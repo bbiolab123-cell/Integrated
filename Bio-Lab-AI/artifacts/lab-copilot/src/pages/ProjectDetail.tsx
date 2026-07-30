@@ -65,6 +65,20 @@ interface ProjectTask {
   priority: string;
 }
 
+// Every read query below used to do `apiFetch(url).then(r => r.json())` with
+// no res.ok check — a 404/500 (e.g. the project not existing, or a backend
+// error) resolved as if it were successful data instead of rejecting, so
+// rendering code then crashed trying to read fields (like .experiments) off
+// an {error: "..."} object instead of showing a proper error state.
+async function fetchJson<T>(url: string): Promise<T> {
+  const res = await apiFetch(url);
+  if (!res.ok) {
+    const body = await res.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error || `Request failed (${res.status})`);
+  }
+  return res.json();
+}
+
 export function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
   const projectId = parseInt(id || "0", 10);
@@ -82,16 +96,17 @@ export function ProjectDetail() {
   const [viewDocId, setViewDocId] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
 
-  const { data: project, isLoading } = useQuery<ProjectDetailData>({
+  const { data: project, isLoading, isError, error, refetch } = useQuery<ProjectDetailData>({
     queryKey: ["project", projectId],
-    queryFn: () => apiFetch(`/api/projects/${projectId}`).then((r) => r.json()),
+    queryFn: () => fetchJson<ProjectDetailData>(`/api/projects/${projectId}`),
     enabled: !!projectId,
+    retry: false,
   });
 
   // All of the user's experiments, to offer the ones not yet in this project.
   const { data: allExperiments } = useQuery<ExperimentRef[]>({
     queryKey: ["experiments-for-project"],
-    queryFn: () => apiFetch("/api/experiments").then((r) => r.json()),
+    queryFn: () => fetchJson<ExperimentRef[]>("/api/experiments"),
   });
 
   const invalidate = () => {
@@ -147,14 +162,14 @@ export function ProjectDetail() {
 
   const { data: projectTasks } = useQuery<ProjectTask[]>({
     queryKey: ["project-tasks", projectId],
-    queryFn: () => apiFetch(`/api/projects/${projectId}/tasks`).then((r) => r.json()),
-    enabled: !!projectId,
+    queryFn: () => fetchJson<ProjectTask[]>(`/api/projects/${projectId}/tasks`),
+    enabled: !!projectId && !isError,
   });
 
   const { data: documents } = useQuery<{ id: number; name: string; chars: number; created_at: string }[]>({
     queryKey: ["project-docs", projectId],
-    queryFn: () => apiFetch(`/api/projects/${projectId}/documents`).then((r) => r.json()),
-    enabled: !!projectId,
+    queryFn: () => fetchJson<{ id: number; name: string; chars: number; created_at: string }[]>(`/api/projects/${projectId}/documents`),
+    enabled: !!projectId && !isError,
   });
 
   const addDocMutation = useMutation({
@@ -180,7 +195,7 @@ export function ProjectDetail() {
 
   const { data: viewedDoc, isLoading: viewedDocLoading } = useQuery<{ id: number; name: string; content: string }>({
     queryKey: ["project-doc", viewDocId],
-    queryFn: () => apiFetch(`/api/project-documents/${viewDocId}`).then((r) => r.json()),
+    queryFn: () => fetchJson<{ id: number; name: string; content: string }>(`/api/project-documents/${viewDocId}`),
     enabled: viewDocId !== null,
   });
 
@@ -270,6 +285,17 @@ export function ProjectDetail() {
       <div className="space-y-6 max-w-5xl mx-auto">
         <div className="h-10 w-64 bg-muted animate-pulse rounded" />
         <div className="h-40 bg-muted animate-pulse rounded-xl" />
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div className="text-center py-12 space-y-3">
+        <p className="font-mono text-sm text-destructive">
+          {error instanceof Error ? error.message : "Couldn't load this project."}
+        </p>
+        <Button variant="outline" size="sm" onClick={() => refetch()}>Retry</Button>
       </div>
     );
   }
