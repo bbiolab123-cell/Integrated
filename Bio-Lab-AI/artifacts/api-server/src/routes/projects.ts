@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { db, projects, experiments, projectDocuments, tasks } from "@workspace/db";
 import { getRequestUserId } from "../lib/requestUser";
-import { decodeUpload, UploadInputError } from "../lib/uploadValidation";
+import { decodeUpload, UploadInputError, MAX_UPLOAD_BYTES } from "../lib/uploadValidation";
 import { PROTOCOL_JSON_FORMAT, parseStructuredProtocol, protocolToMarkdown, structureProtocolWithAI } from "../lib/protocol";
 import { aiErrorStatus } from "../lib/ai";
 import archiver from "archiver";
@@ -10,6 +10,7 @@ import { aiDailyQuota, aiRateLimiter } from "../middlewares/rateLimit";
 import { assertMaxChars } from "../lib/requestLimits";
 import mammoth from "mammoth";
 import pdfParse from "pdf-parse";
+import AdmZip from "adm-zip";
 
 const router: IRouter = Router();
 const MAX_DOC_CHARS = 200_000;
@@ -347,13 +348,16 @@ router.get("/projects/:id/documents", async (req, res) => {
   }
 });
 
-// Extract text from an uploaded .docx/.pdf, or pass plain text straight through.
-async function extractDocumentText(fileContentB64: string, fileName: string): Promise<string> {
-  const ext = fileName.split(".").pop()?.toLowerCase();
-  const buffer = decodeUpload(fileContentB64, fileName, {
-    allowedExt: ["txt", "md", "markdown", "csv", "tsv", "json", "log", "tab", "text", "docx", "pdf"],
-    typeErrorMessage: "Unsupported file type. Upload a text, .docx, or .pdf file.",
-  });
+const DOCUMENT_EXTENSIONS = ["txt", "md", "markdown", "csv", "tsv", "json", "log", "tab", "text", "docx", "pdf"];
+const MAX_ZIP_ENTRIES = 100;
+// Zip metadata cruft that should never become a "document" — macOS resource
+// forks, DS_Store, and any dotfile/hidden-directory entry.
+const ZIP_ENTRY_SKIP_RE = /(^|\/)(__MACOSX|\.DS_Store|\.[^/]+)$/i;
+
+// Extract text from a single file buffer given its extension (already decoded
+// and size-checked). Shared by the direct-upload path and each entry pulled
+// out of an uploaded .zip/folder.
+async function extractTextFromBuffer(buffer: Buffer, ext: string): Promise<string> {
   if (ext === "docx") {
     const { value } = await mammoth.extractRawText({ buffer });
     return value;
@@ -368,6 +372,51 @@ async function extractDocumentText(fileContentB64: string, fileName: string): Pr
   return buffer.toString("utf-8");
 }
 
+// Extract text from an uploaded .docx/.pdf, or pass plain text straight through.
+async function extractDocumentText(fileContentB64: string, fileName: string): Promise<string> {
+  const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
+  const buffer = decodeUpload(fileContentB64, fileName, {
+    allowedExt: DOCUMENT_EXTENSIONS,
+    typeErrorMessage: "Unsupported file type. Upload a text, .docx, or .pdf file.",
+  });
+  return extractTextFromBuffer(buffer, ext);
+}
+
+// Explode an uploaded .zip (or a zipped folder) into one {name, content} pair
+// per supported file inside it — skipping directories, hidden/system files,
+// and anything not in DOCUMENT_EXTENSIONS. Each entry is capped the same way
+// a direct upload would be (size, binary-content check); a single oversized
+// or unreadable entry is skipped rather than failing the whole zip.
+async function extractZipDocuments(zipBuffer: Buffer): Promise<{ name: string; content: string }[]> {
+  const zip = new AdmZip(zipBuffer);
+  const results: { name: string; content: string }[] = [];
+  for (const entry of zip.getEntries()) {
+    if (results.length >= MAX_ZIP_ENTRIES) break;
+    if (entry.isDirectory) continue;
+    const entryName = entry.entryName.replace(/\\/g, "/");
+    if (ZIP_ENTRY_SKIP_RE.test(entryName)) continue;
+    const ext = entryName.split(".").pop()?.toLowerCase() ?? "";
+    if (!DOCUMENT_EXTENSIONS.includes(ext)) continue;
+
+    let buffer: Buffer;
+    try {
+      buffer = entry.getData();
+    } catch {
+      continue;
+    }
+    if (!buffer.byteLength || buffer.byteLength > MAX_UPLOAD_BYTES) continue;
+
+    try {
+      const content = await extractTextFromBuffer(buffer, ext);
+      if (content.trim()) results.push({ name: entryName, content });
+    } catch {
+      // Unreadable single entry (corrupt docx/pdf, binary masquerading as
+      // text) — skip it, don't fail the whole zip over one bad file.
+    }
+  }
+  return results;
+}
+
 router.post("/projects/:id/documents", async (req, res) => {
   try {
     const userId = getRequestUserId(req);
@@ -378,6 +427,43 @@ router.post("/projects/:id/documents", async (req, res) => {
       file_content_b64?: unknown;
       file_name?: unknown;
     };
+
+    // A .zip (or a zipped folder) explodes into many documents in one request —
+    // handled entirely separately since it has no single "name" and inserts more
+    // than one row.
+    if (typeof file_content_b64 === "string" && file_content_b64 && typeof file_name === "string" && /\.zip$/i.test(file_name)) {
+      let zipBuffer: Buffer;
+      try {
+        zipBuffer = decodeUpload(file_content_b64, file_name, {
+          allowedExt: ["zip"],
+          typeErrorMessage: "Unsupported file type.",
+        });
+      } catch (err) {
+        if (err instanceof UploadInputError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
+        throw err;
+      }
+      if (!(await userOwnsProject(projectId, userId))) {
+        return res.status(404).json({ error: "Project not found" });
+      }
+      const extracted = await extractZipDocuments(zipBuffer);
+      if (!extracted.length) {
+        return res.status(422).json({ error: "Couldn't find any readable text/docx/pdf files inside this zip." });
+      }
+      const rows = extracted.map((d) => ({
+        user_id: userId,
+        project_id: projectId,
+        name: d.name.slice(0, 255),
+        content: d.content.length > MAX_DOC_CHARS ? d.content.slice(0, MAX_DOC_CHARS) : d.content,
+      }));
+      const inserted = await db
+        .insert(projectDocuments)
+        .values(rows)
+        .returning({ id: projectDocuments.id, name: projectDocuments.name, created_at: projectDocuments.created_at });
+      return res.status(201).json({ documents: inserted, count: inserted.length });
+    }
+
     if (typeof name !== "string" || !name.trim()) {
       return res.status(400).json({ error: "A document name is required" });
     }

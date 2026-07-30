@@ -49,7 +49,7 @@ export function decodeUpload(
   if (!ext || !allowedExt.includes(ext)) {
     throw new UploadInputError(opts.typeErrorMessage ?? "Unsupported file type. Upload CSV, TSV, TXT, or XLSX files.");
   }
-  if ((ext === "xlsx" || ext === "docx") && !isZipContainer(buffer)) {
+  if ((ext === "xlsx" || ext === "docx" || ext === "zip") && !isZipContainer(buffer)) {
     throw new UploadInputError(`The .${ext} file signature is invalid.`);
   }
   if (ext === "pdf" && !isPdfContainer(buffer)) {

@@ -212,37 +212,54 @@ export function ProjectDetail() {
       reader.readAsDataURL(file);
     });
 
-  const uploadOneFile = async (file: File): Promise<boolean> => {
-    const isPlainText = /\.(txt|md|markdown|csv|tsv|json|log|tab|text)$/i.test(file.name);
+  // Returns the number of documents actually created (a plain file makes one;
+  // a .zip or a folder-picker's files can each explode into many server-side).
+  // 0 means this file failed outright.
+  const uploadOneFile = async (file: File): Promise<number> => {
+    // A folder picker's files carry their path here (e.g. "notes/week1.txt") —
+    // preserve it in the name, same as how a zip's internal paths are kept.
+    const relativeName = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+    const isZip = /\.zip$/i.test(file.name);
+    const isPlainText = !isZip && /\.(txt|md|markdown|csv|tsv|json|log|tab|text)$/i.test(file.name);
     const payload = isPlainText
-      ? { name: file.name, content: await file.text() }
-      : { name: file.name, file_content_b64: await fileToBase64(file), file_name: file.name };
+      ? { name: relativeName, content: await file.text() }
+      : { name: relativeName, file_content_b64: await fileToBase64(file), file_name: file.name };
     const res = await apiFetch(`/api/projects/${projectId}/documents`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    return res.ok;
+    if (!res.ok) return 0;
+    if (isZip) {
+      const data = await res.json().catch(() => null) as { count?: number } | null;
+      return data?.count ?? 0;
+    }
+    return 1;
   };
 
   const handleFilesSelected = async (files: FileList) => {
     setUploadingFiles(true);
-    let succeeded = 0;
+    let filesSucceeded = 0;
+    let docsCreated = 0;
     for (const file of Array.from(files)) {
       try {
-        if (await uploadOneFile(file)) succeeded += 1;
+        const created = await uploadOneFile(file);
+        if (created > 0) {
+          filesSucceeded += 1;
+          docsCreated += created;
+        }
       } catch {
-        // counted as a failure below via succeeded < files.length
+        // counted as a failure below via filesSucceeded < files.length
       }
     }
     setUploadingFiles(false);
     queryClient.invalidateQueries({ queryKey: ["project-docs", projectId] });
-    if (succeeded === files.length) {
-      toast({ title: succeeded === 1 ? "Context added" : `${succeeded} files added`, description: "The project copilot will use it." });
+    if (filesSucceeded === files.length) {
+      toast({ title: docsCreated === 1 ? "Context added" : `${docsCreated} document${docsCreated === 1 ? "" : "s"} added`, description: "The project copilot will use it." });
     } else {
       toast({
         title: "Some files failed",
-        description: `${succeeded} of ${files.length} uploaded. Unsupported or unreadable files were skipped.`,
+        description: `${filesSucceeded} of ${files.length} uploaded (${docsCreated} document${docsCreated === 1 ? "" : "s"} total). Unsupported or unreadable files were skipped.`,
         variant: "destructive",
       });
     }
@@ -576,20 +593,37 @@ export function ProjectDetail() {
                 placeholder="Paste notes, a protocol, observations… or upload a text file below."
               />
             </div>
-            <div className="border-t pt-4 space-y-1.5">
-              <Label className="text-xs text-muted-foreground">Or upload files — select several at once (e.g. a folder's contents)</Label>
-              <label className={`flex items-center gap-2 text-sm w-fit ${uploadingFiles ? "text-muted-foreground" : "text-primary cursor-pointer hover:underline"}`}>
-                {uploadingFiles ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                {uploadingFiles ? "Uploading…" : "Upload files (.txt, .md, .csv, .docx, .pdf)"}
-                <input
-                  type="file"
-                  multiple
-                  disabled={uploadingFiles}
-                  accept=".txt,.md,.markdown,.csv,.tsv,.json,.log,.tab,.text,.docx,.pdf"
-                  className="hidden"
-                  onChange={(e) => { const files = e.target.files; if (files?.length) void handleFilesSelected(files); e.target.value = ""; }}
-                />
-              </label>
+            <div className="border-t pt-4 space-y-2">
+              <Label className="text-xs text-muted-foreground">Or upload files, a .zip, or a whole folder at once</Label>
+              <div className="flex flex-wrap gap-4">
+                <label className={`flex items-center gap-2 text-sm w-fit ${uploadingFiles ? "text-muted-foreground" : "text-primary cursor-pointer hover:underline"}`}>
+                  {uploadingFiles ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                  {uploadingFiles ? "Uploading…" : "Upload files or a .zip"}
+                  <input
+                    type="file"
+                    multiple
+                    disabled={uploadingFiles}
+                    accept=".txt,.md,.markdown,.csv,.tsv,.json,.log,.tab,.text,.docx,.pdf,.zip"
+                    className="hidden"
+                    onChange={(e) => { const files = e.target.files; if (files?.length) void handleFilesSelected(files); e.target.value = ""; }}
+                  />
+                </label>
+                <label className={`flex items-center gap-2 text-sm w-fit ${uploadingFiles ? "text-muted-foreground" : "text-primary cursor-pointer hover:underline"}`}>
+                  {uploadingFiles ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                  {uploadingFiles ? "Uploading…" : "Upload a folder"}
+                  <input
+                    type="file"
+                    multiple
+                    disabled={uploadingFiles}
+                    className="hidden"
+                    // webkitdirectory/directory aren't in React's DOM typings —
+                    // set them as plain attributes so the browser shows a folder
+                    // picker instead of a file picker.
+                    {...{ webkitdirectory: "", directory: "" }}
+                    onChange={(e) => { const files = e.target.files; if (files?.length) void handleFilesSelected(files); e.target.value = ""; }}
+                  />
+                </label>
+              </div>
             </div>
           </div>
           <DialogFooter>
