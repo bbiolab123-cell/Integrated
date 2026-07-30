@@ -99,7 +99,7 @@ will stop instead of weakening a gate. It:
   `v_proj`, alpha 16, dropout 0.05, two epochs, learning rate `2e-4`, and
   effective batch size 16;
 - writes resumable checkpoints to the private Google Drive account;
-- logs numeric training metrics locally with Trackio and persists the Trainer
+- logs numeric training metrics only in the Trainer state and persists that
   history to Drive without logging prompts or responses;
 - validates that the saved adapter is unquantized LoRA-only, under 300 MB, and
   contains Cloudflare's exact required filenames;
