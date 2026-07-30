@@ -21,9 +21,12 @@ bootstrap builder makes exactly 200 examples without calling an LLM:
 The converter balances PubMedQA's yes/no/maybe decisions, covers all nine site
 tasks, produces an exact 160/20/20 train/validation/test split, removes public
 author metadata from the training text, and writes that attribution to a
-separate source manifest. It refuses upstream revision changes, duplicates,
-privacy-pattern matches, group leakage, missing tasks, or a count other than
-200. Generated JSONL and manifests are ignored by Git.
+separate source manifest. Protocol targets are bounded at paragraph or line
+boundaries and the complete target excerpt must also appear as source notes in
+the user input, so the adapter is never taught protocol details absent from its
+context. It refuses upstream revision changes, duplicates, privacy-pattern
+matches, group leakage, missing tasks, or a count other than 200. Generated
+JSONL and manifests are ignored by Git.
 
 `human_export` remains the production-quality mode. Set
 `TRAINING_DATA_MODE = 'human_export'` in the notebook to use the private admin

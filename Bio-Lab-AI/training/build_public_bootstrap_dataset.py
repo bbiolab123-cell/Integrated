@@ -27,11 +27,12 @@ from typing import Any, Iterable
 
 
 DATASET_SCHEMA_VERSION = 2
-BOOTSTRAP_SCHEMA_VERSION = 1
+BOOTSTRAP_SCHEMA_VERSION = 2
 TOTAL_EXAMPLES = 200
 PUBMED_EXAMPLES = 180
 PROTOCOL_EXAMPLES = 20
 MAX_SOURCE_CHARS = 6_500
+MAX_PROTOCOL_TRAINING_CHARS = 2_400
 
 PUBMED_REPO = "qiaojin/PubMedQA"
 PUBMED_REVISION = "9001f2853fb87cab8d220904e0de81ac6973b318"
@@ -269,7 +270,22 @@ def protocol_plain_notes(markdown: str) -> str:
     plain = re.sub(r"^\s*[-*]\s+", "", plain, flags=re.M)
     plain = re.sub(r"^\s*\d+\.\s+", "", plain, flags=re.M)
     plain = re.sub(r"[*_>`]", "", plain)
-    return clean_text(plain)[:1_500]
+    return clean_text(plain)
+
+
+def protocol_training_excerpt(markdown: str) -> str:
+    """Keep a complete, grounded source excerpt inside the model context budget."""
+
+    if len(markdown) <= MAX_PROTOCOL_TRAINING_CHARS:
+        return markdown
+    candidate = markdown[: MAX_PROTOCOL_TRAINING_CHARS + 1]
+    cut = max(candidate.rfind("\n\n"), candidate.rfind("\n"))
+    if cut < MAX_PROTOCOL_TRAINING_CHARS // 2:
+        cut = MAX_PROTOCOL_TRAINING_CHARS
+    excerpt = clean_text(candidate[:cut])
+    if not excerpt or len(excerpt) > MAX_PROTOCOL_TRAINING_CHARS:
+        raise AssertionError("Could not create a bounded protocol training excerpt.")
+    return excerpt
 
 
 def system_message(task: str) -> str:
@@ -494,27 +510,32 @@ def build_protocol_examples() -> tuple[list[dict[str, Any]], list[dict[str, Any]
                 )
             title = protocol_title(markdown, path)
             goal = protocol_goal(markdown)
-            sections = protocol_section_names(markdown)
+            training_markdown = protocol_training_excerpt(markdown)
+            source_notes = protocol_plain_notes(training_markdown)
+            sections = protocol_section_names(training_markdown)
             if task == "protocol_generation":
                 user_content = (
                     "Create a structured protocol using only these source-derived requirements. "
                     "Retain supplied quantities and safety notes; do not invent missing values.\n\n"
                     f"Title: {title}\nGoal: {goal}\n"
-                    f"Required sections: {', '.join(sections) or 'Goal, materials, procedure, safety'}"
+                    f"Required sections: {', '.join(sections) or 'Goal, materials, procedure, safety'}\n"
+                    f"Source requirements:\n{source_notes}"
                 )
             else:
                 user_content = (
                     "Convert these source-derived unstructured notes into a clear SOP. Preserve "
                     "the supplied scientific values and safety language.\n\n"
-                    f"Procedure title: {title}\nSource notes:\n{protocol_plain_notes(markdown)}"
+                    f"Procedure title: {title}\nSource notes:\n{source_notes}"
                 )
+            if source_notes not in user_content:
+                raise AssertionError(f"Protocol {path} target is not grounded in its user input.")
             split = assigned_split(position, len(paths), holdout_per_split=3)
             row = public_row(
                 task=task,
                 split=split,
                 source_group=f"{CADUCEUS_REPO}:{path}",
                 user_content=user_content,
-                assistant_content=markdown,
+                assistant_content=training_markdown,
             )
             examples.append(row)
             manifest.append(
@@ -536,6 +557,8 @@ def build_protocol_examples() -> tuple[list[dict[str, Any]], list[dict[str, Any]
                         "the de-identified training text."
                     ),
                     "public_attribution_excerpt": public_attribution,
+                    "training_excerpt_sha256": sha256_text(training_markdown),
+                    "training_excerpt_chars": len(training_markdown),
                 }
             )
     return examples, manifest
@@ -589,6 +612,12 @@ def validate_dataset(rows: list[dict[str, Any]]) -> dict[str, Any]:
         joined = "\n".join(message["content"] for message in messages)
         if EMAIL_RE.search(joined) or URL_RE.search(joined) or FILE_RE.search(joined):
             raise AssertionError(f"Row {index} failed the privacy scan.")
+        if row["task_type"] in PROTOCOL_TASKS:
+            target = messages[-1]["content"]
+            if len(target) > MAX_PROTOCOL_TRAINING_CHARS:
+                raise AssertionError(f"Protocol row {index} exceeds its source excerpt limit.")
+            if protocol_plain_notes(target) not in messages[-2]["content"]:
+                raise AssertionError(f"Protocol row {index} teaches details absent from its input.")
         if row["input_hash"] in input_hashes or row["example_hash"] in example_hashes:
             raise AssertionError(f"Row {index} is duplicated.")
         input_hashes.add(row["input_hash"])
@@ -686,6 +715,11 @@ Prepare a harmless test buffer.
     assert "Example Person" not in cleaned
     assert "https://" not in cleaned
     assert protocol_title(cleaned, "fallback.md") == "Harmless Test Buffer"
+    excerpt = protocol_training_excerpt(cleaned)
+    assert protocol_plain_notes(excerpt) in (
+        "Create a structured protocol using only these source-derived requirements.\n"
+        f"{protocol_plain_notes(excerpt)}"
+    )
     row = public_row(
         task="protocol_generation",
         split="train",
