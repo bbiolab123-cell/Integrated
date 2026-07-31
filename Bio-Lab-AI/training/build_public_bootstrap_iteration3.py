@@ -33,6 +33,31 @@ EXPECTED_ITERATION2_DATASET_SHA256 = (
 EXPECTED_ITERATION2_REVIEW_SHA256 = (
     "4a6e229a94f58ca38822e545964f35cfa77d00816f53161c014680f5e81a24ec"
 )
+AUDITED_ITERATION2_FAILED_HASHES = (
+    "187dc918614764ca3f7f85e82baf93376960006e59a5335edc20be9629a09e44",
+    "367ba5b89438e732e6591ba897666190220a2712286184674fff8f0ebd8cab73",
+    "440cc45157a404787c328b3d2f715bf1a1ed68010868cdd2013d2d5781895c81",
+    "49700b1d651dc9381de7142165f5f8123701f6ee4c1e41062e8d6aaa9b10ea43",
+    "4f02f4dd5e025cd5e4dd31b8ba3a25cc7553d695ac60948e4e7c9ba2e00a90a0",
+    "7240257117f16a860d5f7a123423d238d242920c5974f5f4652f811bfe57db20",
+    "73b546c1e886b40f3da9489ba1b63a71d61c280a2a3273fba0f25a1a544d1677",
+    "7b79d2f882226dee73eaf3805f17197f021fbfd4497e3a6cd6f3ad15f3a7a1ff",
+    "829d393e8b88889738e9203ce4d49fef9740416c2a0bedf62b9f3d23d86f1623",
+    "8b5b967c75b4a871f09190235ca2d871744e24ef5bb568900a7c845477cb59c7",
+    "9dd7790592379bc09ff1078d2c6cb33edc81ac917b50f75a0665dd2b3436acea",
+    "ab4e8b3ef0bb648b1a25a6dd84e155078aa1ee9d4f7ec80965ccef66506ffddf",
+    "c56b266b45e63fcf019775ef3344f1a658ff1338a38ba5a16d4f51c8fad71055",
+    "c5b894af7bf12a89fa36b090f2269d5166d8cbb1e92856d2b740dfef82aba8b2",
+    "ff202f6bba6a37bc389b8c17cfc3b1f1b3e02a7e5d9bd91f2d297dbfc437c582",
+)
+AUDITED_ITERATION2_REVIEW_SUMMARY = {
+    "review_sha256": EXPECTED_ITERATION2_REVIEW_SHA256,
+    "records": 20,
+    "adapter_approval_count": 5,
+    "adapter_rating_4_or_5_count": 5,
+    "adapter_measurement_fidelity_count": 18,
+    "failed_adapter_examples_promoted_for_correction": 15,
+}
 ITERATION_SCHEMA_VERSION = 2
 SOURCE_SCHEMA_VERSION = 3
 STRICT_VARIANT_COUNTS = {
@@ -585,9 +610,18 @@ def build_protocol_holdouts(
 
 
 def parse_iteration2_failures(
-    review_path: Path,
+    review_path: Path | None,
     iteration2_rows: list[dict[str, Any]],
 ) -> tuple[list[str], dict[str, Any]]:
+    if review_path is None:
+        available_hashes = {row["example_hash"] for row in iteration2_rows}
+        failed_hashes = sorted(AUDITED_ITERATION2_FAILED_HASHES)
+        if not set(failed_hashes) <= available_hashes:
+            raise AssertionError(
+                "The embedded audited failure hashes do not match iteration 2."
+            )
+        return failed_hashes, dict(AUDITED_ITERATION2_REVIEW_SUMMARY)
+
     review_bytes = review_path.read_bytes()
     review_sha = sha256_bytes(review_bytes)
     if review_sha != EXPECTED_ITERATION2_REVIEW_SHA256:
@@ -906,7 +940,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--iteration2-builder", type=Path, required=True)
     parser.add_argument("--iteration2-jsonl", type=Path, required=True)
     parser.add_argument("--iteration2-manifest", type=Path, required=True)
-    parser.add_argument("--iteration2-review", type=Path, required=True)
+    parser.add_argument(
+        "--iteration2-review",
+        type=Path,
+        help=(
+            "Optional private blind-review CSV. When omitted, the builder uses "
+            "the audited anonymous failure hashes embedded above."
+        ),
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     return parser.parse_args()
