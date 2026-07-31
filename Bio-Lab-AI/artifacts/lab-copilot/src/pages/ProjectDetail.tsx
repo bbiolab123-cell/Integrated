@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useParams, Link } from "wouter";
 import { apiFetch } from "@/lib/apiFetch";
+import { downloadBlob } from "@/lib/downloadBlob";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { FolderKanban, FlaskConical, Calendar, Microscope, Plus, Pencil, Trash2, Loader2, ArrowLeft, X, FileText, Upload, Sparkles, Eye, Download } from "lucide-react";
@@ -252,11 +253,15 @@ export function ProjectDetail() {
     return 1;
   };
 
-  const handleFilesSelected = async (files: FileList) => {
+  // Takes a plain array, NOT the input's live FileList: the onChange handler
+  // clears the input (so re-picking the same file still fires a change event),
+  // and clearing it empties the FileList this would otherwise be iterating —
+  // which silently uploaded nothing while still reporting success.
+  const handleFilesSelected = async (files: File[]) => {
     setUploadingFiles(true);
     let filesSucceeded = 0;
     let docsCreated = 0;
-    for (const file of Array.from(files)) {
+    for (const file of files) {
       try {
         const created = await uploadOneFile(file);
         if (created > 0) {
@@ -313,11 +318,7 @@ export function ProjectDetail() {
       const res = await apiFetch(`/api/projects/${project.id}/export.zip`);
       if (!res.ok) throw new Error("Export failed");
       const blob = await res.blob();
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `${project.name.replace(/\s+/g, "_")}.zip`;
-      a.click();
-      URL.revokeObjectURL(a.href);
+      downloadBlob(blob, `${project.name.replace(/\s+/g, "_")}.zip`);
     } catch {
       toast({ title: "Error", description: "Failed to export project.", variant: "destructive" });
     } finally {
@@ -631,7 +632,7 @@ export function ProjectDetail() {
                     disabled={uploadingFiles}
                     accept=".txt,.md,.markdown,.csv,.tsv,.json,.log,.tab,.text,.docx,.pdf,.zip"
                     className="hidden"
-                    onChange={(e) => { const files = e.target.files; if (files?.length) void handleFilesSelected(files); e.target.value = ""; }}
+                    onChange={(e) => { const files = Array.from(e.target.files ?? []); e.target.value = ""; if (files.length) void handleFilesSelected(files); }}
                   />
                 </label>
                 <label className={`flex items-center gap-2 text-sm w-fit ${uploadingFiles ? "text-muted-foreground" : "text-primary cursor-pointer hover:underline"}`}>
@@ -646,7 +647,7 @@ export function ProjectDetail() {
                     // set them as plain attributes so the browser shows a folder
                     // picker instead of a file picker.
                     {...{ webkitdirectory: "", directory: "" }}
-                    onChange={(e) => { const files = e.target.files; if (files?.length) void handleFilesSelected(files); e.target.value = ""; }}
+                    onChange={(e) => { const files = Array.from(e.target.files ?? []); e.target.value = ""; if (files.length) void handleFilesSelected(files); }}
                   />
                 </label>
               </div>

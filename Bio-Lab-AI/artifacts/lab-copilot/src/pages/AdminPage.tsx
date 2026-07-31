@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { apiFetch } from "@/lib/apiFetch";
+import { downloadBlob } from "@/lib/downloadBlob";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -56,12 +57,7 @@ export function AdminPage() {
     const response = await apiFetch("/api/ai/training/export", { headers: { "x-user-email": effectiveEmail } });
     if (!response.ok) throw new Error("Training export failed");
     const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = "biolab-ai-training.jsonl";
-    anchor.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(blob, "biolab-ai-training.jsonl");
   };
 
   const suspend = useMutation({
