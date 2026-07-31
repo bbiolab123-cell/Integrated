@@ -33,6 +33,7 @@ REQUIRED_SNIPPETS = {
     "b26b7554472ca42c200465dda24efffc57145d0014a251c86c32119a26786165",
     "failed_adapter_example_hashes",
     "IN_KAGGLE",
+    "pathlib.Path('/var/colab/hostname').is_file()",
     "torch.cuda.get_device_capability(0)[0] >= 8",
     "checkpoint_steps = min(5, steps_per_epoch)",
     "checkpoints-fp16-restart-safe-v2",
