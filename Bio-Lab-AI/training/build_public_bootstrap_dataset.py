@@ -129,7 +129,7 @@ def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def request_bytes(url: str, attempts: int = 3) -> bytes:
+def request_bytes(url: str, attempts: int = 8) -> bytes:
     request = urllib.request.Request(
         url,
         headers={"User-Agent": "BioLab-public-bootstrap/1.0"},
@@ -137,12 +137,25 @@ def request_bytes(url: str, attempts: int = 3) -> bytes:
     last_error: Exception | None = None
     for attempt in range(attempts):
         try:
-            with urllib.request.urlopen(request, timeout=45) as response:
+            with urllib.request.urlopen(request, timeout=60) as response:
                 return response.read()
-        except (urllib.error.URLError, TimeoutError) as error:
+        except urllib.error.HTTPError as error:
+            last_error = error
+            # Retry only transient server/rate-limit responses. A permanent
+            # 4xx should fail immediately instead of wasting cloud GPU time.
+            if error.code not in {408, 429} and error.code < 500:
+                break
+            retry_after = error.headers.get("Retry-After")
+            if retry_after and retry_after.isdigit():
+                delay = min(int(retry_after), 60)
+            else:
+                delay = min(2**attempt, 30)
+            if attempt + 1 < attempts:
+                time.sleep(delay)
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
             last_error = error
             if attempt + 1 < attempts:
-                time.sleep(2**attempt)
+                time.sleep(min(2**attempt, 30))
     raise RuntimeError(f"Could not download {url}") from last_error
 
 
@@ -695,6 +708,24 @@ def build_dataset() -> tuple[list[dict[str, Any]], dict[str, Any]]:
 
 
 def self_test() -> None:
+    from unittest.mock import MagicMock, patch
+
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = b"retry-ok"
+    transient_error = urllib.error.HTTPError(
+        "https://example.invalid/fixture", 503, "unavailable", {}, None
+    )
+    with (
+        patch(
+            "urllib.request.urlopen",
+            side_effect=[transient_error, response],
+        ) as mocked_urlopen,
+        patch("time.sleep") as mocked_sleep,
+    ):
+        assert request_bytes("https://example.invalid/fixture", attempts=2) == b"retry-ok"
+        assert mocked_urlopen.call_count == 2
+        mocked_sleep.assert_called_once_with(1)
+
     sample_protocol = """
 ```markdown
 # Harmless Test Buffer
