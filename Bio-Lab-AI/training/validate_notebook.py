@@ -8,6 +8,7 @@ without installing ML packages or downloading model weights.
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import pathlib
 import re
@@ -15,6 +16,12 @@ import sys
 
 
 NOTEBOOK = pathlib.Path(__file__).with_name("biolab_lora_colab.ipynb")
+PINNED_LOCAL_SCRIPTS = (
+    "build_public_bootstrap_dataset.py",
+    "build_public_bootstrap_iteration2.py",
+    "build_public_bootstrap_iteration3.py",
+    "build_public_bootstrap_iteration4.py",
+)
 REQUIRED_SNIPPETS = {
     "mistralai/Mistral-7B-Instruct-v0.2",
     "63a8b081895390a26e140280378bc85ec8bce07a",
@@ -29,8 +36,12 @@ REQUIRED_SNIPPETS = {
     "public_licensed",
     "build_public_bootstrap_dataset.py",
     "build_public_bootstrap_iteration3.py",
+    "build_public_bootstrap_iteration4.py",
     "PUBLIC_BOOTSTRAP_SCRIPT_SHA256",
-    "b26b7554472ca42c200465dda24efffc57145d0014a251c86c32119a26786165",
+    "46d46c60726b2edf731a8c8e529063b9130e168ab76a5e59652d9135817d0975",
+    "f841d3bb1700693b64d8eade9cab9bff25a62d94139df90ea627c381b3b12513",
+    "Counter({'train': 340, 'validation': 20, 'test': 20})",
+    "iteration4_targeted_contract_replay",
     "failed_adapter_example_hashes",
     "IN_KAGGLE",
     "pathlib.Path('/var/colab/hostname').is_file()",
@@ -76,6 +87,12 @@ def main() -> int:
         fail(f"Notebook lost required training gates: {missing}")
     if "TO_BE_REPLACED" in source:
         fail("Notebook contains an unresolved integrity placeholder.")
+
+    for name in PINNED_LOCAL_SCRIPTS:
+        script_path = NOTEBOOK.with_name(name)
+        script_sha256 = hashlib.sha256(script_path.read_bytes()).hexdigest()
+        if script_sha256 not in source:
+            fail(f"Notebook does not pin the current {name} hash: {script_sha256}")
 
     for label, pattern in FORBIDDEN_SECRET_PATTERNS.items():
         if pattern.search(source):

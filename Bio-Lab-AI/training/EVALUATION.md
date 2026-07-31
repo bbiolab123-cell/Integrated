@@ -12,6 +12,16 @@ owner's blind scientific review, the 15-point improvement requirement, or any
 production contract gate, and it must not be represented as site-specific
 human feedback.
 
+## Current release status
+
+Iteration 3 is quarantined and not deployable. Its completed 20-example blind
+review produced 40% adapter approval and 40% ratings of 4/5 or higher, compared
+with 0% base approval, but it failed structured-response validity, exact
+measurement fidelity, and the required 80% quality rate. Privacy and the
+15-percentage-point improvement gate passed. Iteration 4 must be trained on its
+audited 380-example dataset and evaluated on its fresh 20-example test split;
+no iteration-3 score may be reused as an iteration-4 release result.
+
 ## Blind scientific review
 
 The Colab notebook deterministically generates one base and one adapter answer

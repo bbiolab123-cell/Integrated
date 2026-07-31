@@ -2,14 +2,15 @@
 
 This is the training runbook for the small Bio-Lab LoRA adapter. The website
 continues to use the open Mistral base through Cloudflare while better training
-data is collected. The 7B model is downloaded and trained only inside Google
-Colab; the Mac prepares no weights and runs no training.
+data is collected. The 7B model is downloaded and trained only inside free
+Google Colab or Kaggle cloud GPU sessions; the Mac prepares text, runs static
+checks, and never downloads or trains model weights.
 
 ## Two honest training modes
 
-The Colab notebook defaults to `public_bootstrap`, which can start immediately
+The cloud notebook defaults to `public_bootstrap`, which can start immediately
 without pretending that model-written text was reviewed by a scientist. The
-bootstrap builder makes exactly 200 examples without calling an LLM:
+base builder makes 200 examples without calling an LLM:
 
 - 180 expert-annotated questions from
   [PubMedQA](https://huggingface.co/datasets/qiaojin/PubMedQA) at pinned
@@ -18,15 +19,26 @@ bootstrap builder makes exactly 200 examples without calling an LLM:
   [Caduceus](https://huggingface.co/datasets/Kquant03/Caduceus-Dataset) at
   pinned revision `210c578a82a18455fe337d6c3261759eaa7c7d53` (CC BY 4.0).
 
-The converter balances PubMedQA's yes/no/maybe decisions, covers all nine site
-tasks, produces an exact 160/20/20 train/validation/test split, removes public
-author metadata from the training text, and writes that attribution to a
-separate source manifest. Protocol targets are bounded at paragraph or line
+Iterations 2–4 deterministically extend that pinned base. The current fourth
+iteration contains exactly 380 unique examples with a 340/20/20
+train/validation/test split and fingerprint
+`f841d3bb1700693b64d8eade9cab9bff25a62d94139df90ea627c381b3b12513`.
+It promotes iteration-3 holdouts to training-only data, adds 40 targeted
+contract replays, and creates fresh independent holdouts covering all nine site
+tasks. The converter balances PubMedQA's yes/no/maybe decisions, removes public
+author metadata from training text, and writes attribution to a separate source
+manifest. Protocol targets are bounded at paragraph or line
 boundaries and the complete target excerpt must also appear as source notes in
 the user input, so the adapter is never taught protocol details absent from its
-context. It refuses upstream revision changes, duplicates, privacy-pattern
-matches, group leakage, missing tasks, or a count other than 200. Generated
-JSONL and manifests are ignored by Git.
+context. It refuses upstream revision changes, unsupported structured numbers,
+duplicates, privacy-pattern matches, group leakage, missing tasks, or incorrect
+split/count fingerprints. No model output is used as a training label.
+Generated JSONL and manifests are ignored by Git.
+
+Iteration 3 is quarantined: its blind review achieved 40% approval versus 0%
+for the base, but failed structured validity, exact measurement fidelity, and
+the 80% quality gate. It must not be uploaded or deployed. Iteration 4 exists to
+correct those failures and must pass every release gate independently.
 
 `human_export` remains the production-quality mode. Set
 `TRAINING_DATA_MODE = 'human_export'` in the notebook to use the private admin
@@ -83,12 +95,13 @@ python3 training/build_public_bootstrap_dataset.py \
 
 This check prepares text only; it does not train or download Mistral.
 
-## Run the audited Colab notebook
+## Run the audited cloud notebook
 
 Open
 [the Bio-Lab training notebook](https://colab.research.google.com/github/bbiolab123-cell/Integrated/blob/main/Bio-Lab-AI/training/biolab_lora_colab.ipynb)
-in Google Colab, select a **T4 GPU**, and run the cells in order. The notebook
-will stop instead of weakening a gate. It:
+in the `bbiolab123` cloud account. In Google Colab select a **T4 GPU**, or import
+the same notebook privately into Kaggle and select a free **P100/T4-class GPU**.
+Run the cells in order. The notebook will stop instead of weakening a gate. It:
 
 - downloads and hash-verifies the public builder in bootstrap mode;
 - preserves the public-source attribution manifest with the private run audit;
@@ -101,7 +114,8 @@ will stop instead of weakening a gate. It:
 - trains only completion tokens using 4-bit NF4 QLoRA, rank 8, `q_proj` and
   `v_proj`, alpha 16, dropout 0.05, two epochs, learning rate `2e-4`, and
   effective batch size 16;
-- writes resumable checkpoints to the private Google Drive account;
+- writes restart-safe checkpoints every five optimizer steps to private Google
+  Drive in Colab or the private notebook output in Kaggle;
 - logs numeric training metrics only in the Trainer state and persists that
   history to Drive without logging prompts or responses;
 - validates that the saved adapter is unquantized LoRA-only, under 300 MB, and
@@ -116,8 +130,9 @@ permission to replace the production model. It remains in the separate private
 repository `biolab-ai-mistral-lora-public-bootstrap` and must still pass the
 blind review and production contract gates.
 
-Colab GPU availability and runtime duration are not guaranteed. If the GPU
-gate fails, stop and try again later. Do not fall back to the Mac.
+Free GPU availability and runtime duration are not guaranteed. If the GPU gate
+fails, stop and try again later. Never fall back to the Mac or enable paid
+compute.
 
 ## Publish to Cloudflare only after acceptance
 
