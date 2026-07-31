@@ -38,6 +38,7 @@ import { buildControlSummary, computeControlMetrics, ROLE_COLOR, ROLE_LABEL, ROL
 import { DoseResponseCard } from "@/components/DoseResponseCard";
 import { isEnabled } from "@/lib/features";
 import { apiFetch } from "@/lib/apiFetch";
+import { downloadBlob } from "@/lib/downloadBlob";
 import { LabConversation, LabPageHeader, LabPanel, LabSectionHeader, type LabAccent } from "@/components/lab/LivingLab";
 import {
   Select,
@@ -198,11 +199,7 @@ export function ExperimentDetail() {
       })
       .join("\n");
     const blob = new Blob([`${meta}\n${rows}`], { type: "text/csv" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `${experiment.name.replace(/\s+/g, "_")}_${experiment.date}_plate.csv`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    downloadBlob(blob, `${experiment.name.replace(/\s+/g, "_")}_${experiment.date}_plate.csv`);
   };
 
   const downloadPng = async () => {
