@@ -22,7 +22,7 @@ base builder makes 200 examples without calling an LLM:
 Iterations 2–4 deterministically extend that pinned base. The current fourth
 iteration contains exactly 380 unique examples with a 340/20/20
 train/validation/test split and fingerprint
-`f841d3bb1700693b64d8eade9cab9bff25a62d94139df90ea627c381b3b12513`.
+`423530e9aefdd14361b265f1ba0b86faf1baf7315385026f4f86e9fce82a37b7`.
 It promotes iteration-3 holdouts to training-only data, adds 40 targeted
 contract replays, and creates fresh independent holdouts covering all nine site
 tasks. The converter balances PubMedQA's yes/no/maybe decisions, removes public

@@ -14,6 +14,7 @@ import csv
 import hashlib
 import importlib.util
 import json
+import re
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -79,7 +80,7 @@ PROTOCOL_HOLDOUT_PATHS = {
         "protocol_generation": (
             "markdown-output/estimating-microbial-population-data-from-optical-cgumtwu6.md"
         ),
-        "sop_structuring": "markdown-output/unix-and-bioinformatics-eptbdnn.md",
+        "sop_structuring": "markdown-output/gradient-pcr-with-dmso-by6kpzcw.md",
     },
     "test": {
         "protocol_generation": (
@@ -89,6 +90,21 @@ PROTOCOL_HOLDOUT_PATHS = {
             "markdown-output/multisite-gateway-calculations-excel-spreadsheet-b4xdqxi6.md"
         ),
     },
+}
+
+PRIVACY_PATTERNS = {
+    "email": re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"),
+    "clerk_user_id": re.compile(r"\buser_[A-Za-z0-9]{6,}\b"),
+    "absolute_path": re.compile(
+        r"(?i)(?:/(?:Users|home|var|tmp)/[^\s]+|[A-Z]:\\[^\s]+)"
+    ),
+    "credential": re.compile(
+        r"(?i)\b(?:bearer\s+[A-Za-z0-9._-]{8,}|sk-[A-Za-z0-9_-]{8,}|"
+        r"api[_-]?(?:key|token)\s*[:=]\s*[^\s]+)"
+    ),
+    "filename": re.compile(
+        r"(?i)\b[^\s/\\]+\.(?:csv|tsv|xls|xlsx|doc|docx|pdf|json|zip)\b"
+    ),
 }
 
 
@@ -467,13 +483,15 @@ def validate_iteration(rows: list[dict[str, Any]], builder, iteration3_builder) 
         ]:
             raise AssertionError(f"Row {index} has invalid message roles.")
         joined = "\n".join(message["content"] for message in row["messages"])
-        privacy_match = (
-            builder.EMAIL_RE.search(joined)
-            or builder.URL_RE.search(joined)
-            or builder.FILE_RE.search(joined)
-        )
-        if privacy_match:
-            raise AssertionError(f"Row {index} failed the privacy scan.")
+        privacy_findings = [
+            finding
+            for finding, pattern in PRIVACY_PATTERNS.items()
+            if pattern.search(joined)
+        ]
+        if privacy_findings:
+            raise AssertionError(
+                f"Row {index} failed the privacy scan: {privacy_findings}."
+            )
         target = row["messages"][-1]["content"]
         if target.lstrip().startswith("{"):
             iteration3_builder.validate_structured_target(row["task_type"], target)
