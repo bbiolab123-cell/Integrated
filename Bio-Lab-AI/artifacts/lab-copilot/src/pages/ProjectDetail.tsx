@@ -231,7 +231,7 @@ export function ProjectDetail() {
   // Returns the number of documents actually created (a plain file makes one;
   // a .zip or a folder-picker's files can each explode into many server-side).
   // 0 means this file failed outright.
-  const uploadOneFile = async (file: File): Promise<number> => {
+  const uploadOneFile = async (file: File): Promise<{ created: number; error?: string }> => {
     // A folder picker's files carry their path here (e.g. "notes/week1.txt") —
     // preserve it in the name, same as how a zip's internal paths are kept.
     const relativeName = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
@@ -245,12 +245,18 @@ export function ProjectDetail() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    if (!res.ok) return 0;
+    if (!res.ok) {
+      // Surface the server's actual reason ("File too large…", "Old Word .doc
+      // files aren't supported…") — a generic failure message makes an upload
+      // problem impossible for the scientist to act on.
+      const body = await res.json().catch(() => null) as { error?: string } | null;
+      return { created: 0, error: body?.error || `Upload failed (${res.status})` };
+    }
     if (isZip) {
       const data = await res.json().catch(() => null) as { count?: number } | null;
-      return data?.count ?? 0;
+      return { created: data?.count ?? 0 };
     }
-    return 1;
+    return { created: 1 };
   };
 
   // Takes a plain array, NOT the input's live FileList: the onChange handler
@@ -261,15 +267,18 @@ export function ProjectDetail() {
     setUploadingFiles(true);
     let filesSucceeded = 0;
     let docsCreated = 0;
+    const failures: string[] = [];
     for (const file of files) {
       try {
-        const created = await uploadOneFile(file);
+        const { created, error } = await uploadOneFile(file);
         if (created > 0) {
           filesSucceeded += 1;
           docsCreated += created;
+        } else {
+          failures.push(`${file.name}: ${error ?? "no readable content"}`);
         }
-      } catch {
-        // counted as a failure below via filesSucceeded < files.length
+      } catch (err) {
+        failures.push(`${file.name}: ${err instanceof Error ? err.message : "upload failed"}`);
       }
     }
     setUploadingFiles(false);
@@ -277,9 +286,13 @@ export function ProjectDetail() {
     if (filesSucceeded === files.length) {
       toast({ title: docsCreated === 1 ? "Context added" : `${docsCreated} document${docsCreated === 1 ? "" : "s"} added`, description: "The project copilot will use it." });
     } else {
+      // Show the real reasons (first few), not just a count — this is usually
+      // something the scientist can fix directly (wrong format, too big).
+      const shown = failures.slice(0, 3).join("\n");
+      const more = failures.length > 3 ? `\n…and ${failures.length - 3} more.` : "";
       toast({
-        title: "Some files failed",
-        description: `${filesSucceeded} of ${files.length} uploaded (${docsCreated} document${docsCreated === 1 ? "" : "s"} total). Unsupported or unreadable files were skipped.`,
+        title: filesSucceeded === 0 ? "Upload failed" : `Uploaded ${filesSucceeded} of ${files.length}`,
+        description: `${shown}${more}`,
         variant: "destructive",
       });
     }

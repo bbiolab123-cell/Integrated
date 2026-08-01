@@ -101,8 +101,8 @@ app.use(
 );
 
 app.use(cors(corsOptions));
-app.use(express.json({ limit: process.env.REQUEST_BODY_LIMIT ?? "5mb" }));
-app.use(express.urlencoded({ extended: true, limit: process.env.REQUEST_BODY_LIMIT ?? "5mb" }));
+app.use(express.json({ limit: process.env.REQUEST_BODY_LIMIT ?? "16mb" }));
+app.use(express.urlencoded({ extended: true, limit: process.env.REQUEST_BODY_LIMIT ?? "16mb" }));
 
 app.use("/api", (_req, res, next) => {
   res.setHeader("Cache-Control", "no-store");

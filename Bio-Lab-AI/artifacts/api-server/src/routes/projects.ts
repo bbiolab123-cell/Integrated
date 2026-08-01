@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { db, projects, experiments, projectDocuments, tasks } from "@workspace/db";
 import { getRequestUserId } from "../lib/requestUser";
-import { decodeUpload, UploadInputError, MAX_UPLOAD_BYTES } from "../lib/uploadValidation";
+import { decodeUpload, UploadInputError, MAX_DOCUMENT_UPLOAD_BYTES } from "../lib/uploadValidation";
 import { PROTOCOL_JSON_FORMAT, parseStructuredProtocol, protocolToMarkdown, structureProtocolWithAI } from "../lib/protocol";
 import { aiErrorStatus } from "../lib/ai";
 import archiver from "archiver";
@@ -383,6 +383,7 @@ async function extractDocumentText(fileContentB64: string, fileName: string): Pr
   const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
   const buffer = decodeUpload(fileContentB64, fileName, {
     allowedExt: DOCUMENT_EXTENSIONS,
+    maxBytes: MAX_DOCUMENT_UPLOAD_BYTES,
     typeErrorMessage: "Unsupported file type. Upload a text, .docx, or .pdf file.",
   });
   return extractTextFromBuffer(buffer, ext);
@@ -410,7 +411,7 @@ async function extractZipDocuments(zipBuffer: Buffer): Promise<{ name: string; c
     } catch {
       continue;
     }
-    if (!buffer.byteLength || buffer.byteLength > MAX_UPLOAD_BYTES) continue;
+    if (!buffer.byteLength || buffer.byteLength > MAX_DOCUMENT_UPLOAD_BYTES) continue;
 
     try {
       const content = await extractTextFromBuffer(buffer, ext);
@@ -443,6 +444,7 @@ router.post("/projects/:id/documents", async (req, res) => {
         zipBuffer = decodeUpload(file_content_b64, file_name, {
           allowedExt: ["zip"],
           typeErrorMessage: "Unsupported file type.",
+          maxBytes: MAX_DOCUMENT_UPLOAD_BYTES,
         });
       } catch (err) {
         if (err instanceof UploadInputError) {
@@ -493,8 +495,11 @@ router.post("/projects/:id/documents", async (req, res) => {
       return res.status(400).json({ error: "Document content is empty" });
     }
 
+    // Truncate rather than reject: a long SOP or thesis is still useful context
+    // up to the cap, and losing the tail beats losing the whole document. Zip
+    // entries are handled the same way above.
     if (resolvedContent.length > MAX_DOC_CHARS) {
-      return res.status(413).json({ error: `Document too large (max ${MAX_DOC_CHARS} characters)` });
+      resolvedContent = `${resolvedContent.slice(0, MAX_DOC_CHARS)}\n\n[truncated — document exceeded ${MAX_DOC_CHARS} characters]`;
     }
     if (!(await userOwnsProject(projectId, userId))) {
       return res.status(404).json({ error: "Project not found" });
