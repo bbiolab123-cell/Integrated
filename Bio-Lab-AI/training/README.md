@@ -19,12 +19,13 @@ base builder makes 200 examples without calling an LLM:
   [Caduceus](https://huggingface.co/datasets/Kquant03/Caduceus-Dataset) at
   pinned revision `210c578a82a18455fe337d6c3261759eaa7c7d53` (CC BY 4.0).
 
-Iterations 2–4 deterministically extend that pinned base. The current fourth
-iteration contains exactly 380 unique examples with a 340/20/20
+Iterations 2–5 deterministically extend that pinned base. The current fifth
+iteration contains exactly 480 unique examples with a 440/20/20
 train/validation/test split and fingerprint
-`423530e9aefdd14361b265f1ba0b86faf1baf7315385026f4f86e9fce82a37b7`.
-It promotes iteration-3 holdouts to training-only data, adds 40 targeted
-contract replays, and creates fresh independent holdouts covering all nine site
+`73c532c5b976df76ddf480ff9c755303d8abb52e5358db1c7fbbae58480d9847`.
+It promotes iteration-4 holdouts to training-only data, adds 60 targeted
+decision, completeness, measurement, and schema replays, and creates fresh
+independent holdouts covering all nine site
 tasks. The converter balances PubMedQA's yes/no/maybe decisions, removes public
 author metadata from training text, and writes attribution to a separate source
 manifest. Protocol targets are bounded at paragraph or line
@@ -35,10 +36,12 @@ duplicates, privacy-pattern matches, group leakage, missing tasks, or incorrect
 split/count fingerprints. No model output is used as a training label.
 Generated JSONL and manifests are ignored by Git.
 
-Iteration 3 is quarantined: its blind review achieved 40% approval versus 0%
-for the base, but failed structured validity, exact measurement fidelity, and
-the 80% quality gate. It must not be uploaded or deployed. Iteration 4 exists to
-correct those failures and must pass every release gate independently.
+Iterations 3 and 4 are quarantined. Iteration 4 improved approval to 50% versus
+0% for the base and reached 100% structured validity and privacy, but it still
+failed exact measurement fidelity (19/20) and the 80% quality gate (10/20 rated
+4 or 5). Neither adapter may be uploaded or deployed. Iteration 5 implements
+the remediation in `training/ITERATION5_REMEDIATION.md`; it also must pass every
+release gate before publishing or deployment.
 
 `human_export` remains the production-quality mode. Set
 `TRAINING_DATA_MODE = 'human_export'` in the notebook to use the private admin
