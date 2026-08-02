@@ -14,14 +14,15 @@ human feedback.
 
 ## Current release status
 
-Iterations 3–5 are quarantined and not deployable. Iteration 5 completed on its
-audited 480-example dataset and improved to 40% adapter approval versus 25% for
-the base. It passed privacy and the 15-point improvement gate, but failed
-structured validity (4/5), exact measurement fidelity (19/20), and the required
-80% quality rate (8/20). Its review was AI-assisted at the owner's explicit
-request and is not a human scientist/owner rating. Iteration 6 is prepared as a
-deterministic 680-example dataset with a fresh 20-example test split; no score
-from an earlier iteration may be reused as an iteration-6 release result.
+Iterations 3–6 are quarantined and not deployable. Iteration 6 completed on its
+audited 680-example dataset and improved to 55% adapter approval versus 15% for
+the base. It passed structured validity (5/5), measurement fidelity (20/20),
+privacy (20/20), and the 15-point improvement gate, but failed the required 80%
+quality rate (11/20 rated 4 or 5). Its review was AI-assisted at the owner's
+explicit request and is not a human scientist/owner rating. Iteration 7 is
+prepared as a deterministic 800-example dataset with a fresh 20-example test
+split; no score from an earlier iteration may be reused as an iteration-7
+release result.
 
 ## Blind scientific review
 
