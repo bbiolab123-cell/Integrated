@@ -46,6 +46,7 @@ REQUIRED_SNIPPETS = {
     "dfbbb632dea9ca338fd30afddfef88d69e3df3bf945efb36dffbe37dad672bdb",
     "05ecb3879962d71bc4a96f4df59603ce54ea43387305679f7974430a08bdb82f",
     "Counter({'train': 640, 'validation': 20, 'test': 20})",
+    "Counter({'train': 130, 'validation': 5, 'test': 5})",
     "iteration6_balanced_contract_replay",
     "failed_adapter_example_hashes",
     "IN_KAGGLE",
