@@ -19,11 +19,11 @@ base builder makes 200 examples without calling an LLM:
   [Caduceus](https://huggingface.co/datasets/Kquant03/Caduceus-Dataset) at
   pinned revision `210c578a82a18455fe337d6c3261759eaa7c7d53` (CC BY 4.0).
 
-Iterations 2–5 deterministically extend that pinned base. The current fifth
-iteration contains exactly 480 unique examples with a 440/20/20
+Iterations 2–6 deterministically extend that pinned base. The current sixth
+iteration contains exactly 680 unique examples with a 640/20/20
 train/validation/test split and fingerprint
-`73c532c5b976df76ddf480ff9c755303d8abb52e5358db1c7fbbae58480d9847`.
-It promotes iteration-4 holdouts to training-only data, adds 60 targeted
+`05ecb3879962d71bc4a96f4df59603ce54ea43387305679f7974430a08bdb82f`.
+It promotes iteration-5 holdouts to training-only data, adds 160 balanced
 decision, completeness, measurement, and schema replays, and creates fresh
 independent holdouts covering all nine site
 tasks. The converter balances PubMedQA's yes/no/maybe decisions, removes public
@@ -36,12 +36,12 @@ duplicates, privacy-pattern matches, group leakage, missing tasks, or incorrect
 split/count fingerprints. No model output is used as a training label.
 Generated JSONL and manifests are ignored by Git.
 
-Iterations 3 and 4 are quarantined. Iteration 4 improved approval to 50% versus
-0% for the base and reached 100% structured validity and privacy, but it still
-failed exact measurement fidelity (19/20) and the 80% quality gate (10/20 rated
-4 or 5). Neither adapter may be uploaded or deployed. Iteration 5 implements
-the remediation in `training/ITERATION5_REMEDIATION.md`; it also must pass every
-release gate before publishing or deployment.
+Iterations 3–5 are quarantined. Iteration 5 improved approval to 40% versus 25%
+for the base, but it failed structured validity (4/5), exact measurement
+fidelity (19/20), and the 80% quality gate (8/20 rated 4 or 5). No quarantined
+adapter may be uploaded or deployed. Iteration 6 implements the remediation in
+`training/ITERATION6_REMEDIATION.md`; it also must pass every release gate
+before publishing or deployment.
 
 `human_export` remains the production-quality mode. Set
 `TRAINING_DATA_MODE = 'human_export'` in the notebook to use the private admin
