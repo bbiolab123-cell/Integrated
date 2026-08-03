@@ -58,6 +58,8 @@ references. Training and evaluation may run only on free cloud GPU compute.
 
 ## Release decision
 
-The iteration-8 adapter remains quarantined until a fresh blind evaluation
-passes all five release gates. Do not publish, upload to Cloudflare, or deploy
-if any gate fails; prepare another audited iteration instead.
+The completed iteration-8 adapter is quarantined. Its fresh blind evaluation
+passed structured validity, privacy, and approval improvement, but failed
+measurement fidelity at 19/20 and quality at 11/20. It must not be published,
+uploaded to Cloudflare, or deployed. Iteration 9 applies the audited remediation
+described in `ITERATION9_REMEDIATION.md`.
