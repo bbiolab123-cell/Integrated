@@ -1,5 +1,21 @@
 # Iteration 9 remediation
 
+## Terminal result
+
+Iteration 9 completed on the private free Kaggle P100 run
+`iambiolab/biolab-ai-iteration9-training-clean`, script version `339960086`.
+Training finished with finite loss (`0.802727296617296`), validation loss
+(`0.9084206819534302`), and mean validation token accuracy
+(`0.781708025932312`). Checkpoints 170, 175, and 180 were retained, and the
+13,648,432-byte LoRA-only adapter package passed its structural integrity
+checks.
+
+The locked blind review then passed only two of five release gates: privacy
+(20/20) and approval improvement (35% adapter versus 15% base). It failed
+structured validity (4/5), measurement fidelity (19/20), and quality (7/20
+rated 4 or 5 versus the required 16/20). The adapter is quarantined. It was not
+published, uploaded to Cloudflare, or deployed.
+
 Iteration 8 completed on the private free Kaggle P100 run
 `iambiolab/biolab-ai-iteration8-training-clean`, script version `339787977`.
 Training, validation, restart-safe checkpoint rotation, blind generation, and
