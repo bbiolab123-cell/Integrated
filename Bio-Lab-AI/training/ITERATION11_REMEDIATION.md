@@ -49,11 +49,14 @@ pinned, open-licensed Caduceus revision and preserve source safety language.
 Iteration 11 keeps 4-bit NF4 Mistral 7B, FP16 compute on P100/T4-class
 hardware, rank-8 `q_proj`/`v_proj` LoRA, alpha 16, dropout 0.05, effective batch
 size 16, completion-only loss, and restart-safe checkpoints every five
-optimizer steps. It uses two epochs at `3e-5` and a 2,102-example optimizer
-plan per epoch: 1,480 base training records, 200 focused replays, 410 structured
-replays, and 12 failed parent references. The lower learning rate responds to
+optimizer steps. It uses two epochs at `3e-5` and a 1,692-example optimizer
+plan per epoch: 1,480 base training records, 200 focused replays, and 12 failed
+parent references. All 410 structured training records remain in the base set,
+and 65 of the 200 focused records are structured corrections, but the complete
+structured set is not redundantly weighted a second time because iteration 10
+already passed structured validity at 5/5. The lower learning rate responds to
 iteration 10's widening train/validation loss gap while retaining focused
-replay pressure on the observed errors.
+replay pressure on the observed errors and fitting the remaining free GPU window.
 
 Training examples must fit completely inside the audited 2,048-token window;
 the cloud run stops before model loading if any example exceeds it.
