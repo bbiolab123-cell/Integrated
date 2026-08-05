@@ -1,5 +1,13 @@
 # Iteration 10 remediation
 
+## Terminal result
+
+Iteration 10 completed successfully on its private free Kaggle P100 run. Its
+blind adapter evaluation passed structured validity (5/5), privacy (20/20),
+and approval improvement (40% versus 15% for the pinned base). It failed
+measurement fidelity (18/20) and the 80% quality gate (8/20). The adapter is
+quarantined and was not published, uploaded to Cloudflare, or deployed.
+
 Iteration 9 completed on the private free Kaggle P100 run
 `iambiolab/biolab-ai-iteration9-training-clean`, script version `339960086`.
 Its training, checkpoint rotation, validation, blind generation, and LoRA-only

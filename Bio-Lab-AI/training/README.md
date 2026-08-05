@@ -19,12 +19,12 @@ base builder makes 200 examples without calling an LLM:
   [Caduceus](https://huggingface.co/datasets/Kquant03/Caduceus-Dataset) at
   pinned revision `210c578a82a18455fe337d6c3261759eaa7c7d53` (CC BY 4.0).
 
-Iterations 2–10 deterministically extend that pinned base. The current tenth
-iteration contains exactly 1,280 unique examples with a 1,240/20/20
+Iterations 2–11 deterministically extend that pinned base. The current eleventh
+iteration contains exactly 1,520 unique examples with a 1,480/20/20
 train/validation/test split and fingerprint
-`c6ff42f670bba52c14ab1c35da125a8e1c2350b31add0edb3bc16b612a5436bf`.
-It promotes iteration-9 holdouts to training-only data, adds 160 focused
-decision, fidelity, actionability, and schema replays, and
+`cdce3114a0c963510305da2c5c435c30295562adf7803c46c3dfbda79baef3c6`.
+It promotes iteration-10 holdouts to training-only data, adds 200 focused
+decision, measurement ownership, scope, consistency, actionability, and schema replays, and
 creates fresh independent holdouts covering all nine site tasks. The converter
 balances PubMedQA's yes/no/maybe decisions, removes public
 author metadata from training text, and writes attribution to a separate source
@@ -36,11 +36,11 @@ duplicates, privacy-pattern matches, group leakage, missing tasks, or incorrect
 split/count fingerprints. No model output is used as a training label.
 Generated JSONL and manifests are ignored by Git.
 
-Iterations 3–9 are quarantined. Iteration 9 passed privacy and approval
-improvement, but failed structured validity at 4/5, measurement fidelity at
-19/20, and quality at 7/20. No quarantined adapter may be uploaded or deployed.
-Iteration 10 implements the focused remediation in
-`training/ITERATION10_REMEDIATION.md`; it also must pass every release gate
+Iterations 3–10 are quarantined. Iteration 10 passed structured validity,
+privacy, and approval improvement, but failed measurement fidelity at 18/20
+and quality at 8/20. No quarantined adapter may be uploaded or deployed.
+Iteration 11 implements the focused remediation in
+`training/ITERATION11_REMEDIATION.md`; it also must pass every release gate
 before publishing or deployment.
 
 `human_export` remains the production-quality mode. Set
@@ -115,7 +115,7 @@ Run the cells in order. The notebook will stop instead of weakening a gate. It:
 - tokenizes every example before training and refuses any example that would
   be truncated at 2,048 tokens;
 - trains only completion tokens using 4-bit NF4 QLoRA, rank 8, `q_proj` and
-  `v_proj`, alpha 16, dropout 0.05, two epochs, learning rate `5e-5`, and
+  `v_proj`, alpha 16, dropout 0.05, two epochs, learning rate `3e-5`, and
   effective batch size 16;
 - writes restart-safe checkpoints every five optimizer steps to private Google
   Drive in Colab or the private notebook output in Kaggle;
