@@ -6,10 +6,17 @@ import { clerkMiddleware } from "@clerk/express";
 import router from "./routes";
 import { logger } from "./lib/logger";
 import { apiRateLimiter } from "./middlewares/rateLimit";
-import { assertSafeAuthConfiguration, isClerkConfigured, isDemoMode, isProduction } from "./lib/runtimeConfig";
+import {
+  assertSafeAiConfiguration,
+  assertSafeAuthConfiguration,
+  isClerkConfigured,
+  isDemoMode,
+  isProduction,
+} from "./lib/runtimeConfig";
 
 const app: Express = express();
 assertSafeAuthConfiguration();
+assertSafeAiConfiguration();
 
 app.disable("x-powered-by");
 if (isProduction) app.set("trust proxy", 1);

@@ -10,3 +10,4 @@ export * from "./experimentComments";
 export * from "./tasks";
 export * from "./unified-data";
 export * from "./aiTrainingExamples";
+export * from "./aiDailyUsage";

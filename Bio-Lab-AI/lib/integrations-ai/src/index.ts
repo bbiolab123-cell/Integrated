@@ -1,7 +1,15 @@
 import type { AiProvider } from "./provider";
-import { CloudflareAiProvider } from "./cloudflare";
+import { CloudflareAiProvider, readCloudflareAiDeploymentInfo } from "./cloudflare";
 
 let cachedProvider: AiProvider | null = null;
+
+export function assertSafeAiProviderConfiguration(env: NodeJS.ProcessEnv = process.env): void {
+  const provider = (env.AI_PROVIDER?.trim().toLowerCase() || "cloudflare");
+  if (provider !== "cloudflare") {
+    throw new Error(`Unsupported AI_PROVIDER "${provider}". Supported providers: cloudflare.`);
+  }
+  readCloudflareAiDeploymentInfo(env);
+}
 
 export function getAiProvider(env: NodeJS.ProcessEnv = process.env): AiProvider {
   if (cachedProvider) return cachedProvider;

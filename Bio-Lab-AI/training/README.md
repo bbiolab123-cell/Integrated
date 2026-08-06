@@ -36,12 +36,12 @@ duplicates, privacy-pattern matches, group leakage, missing tasks, or incorrect
 split/count fingerprints. No model output is used as a training label.
 Generated JSONL and manifests are ignored by Git.
 
-Iterations 3–10 are quarantined. Iteration 10 passed structured validity,
-privacy, and approval improvement, but failed measurement fidelity at 18/20
-and quality at 8/20. No quarantined adapter may be uploaded or deployed.
-Iteration 11 implements the focused remediation in
-`training/ITERATION11_REMEDIATION.md`; it also must pass every release gate
-before publishing or deployment.
+Iterations 3–11 are quarantined. Iteration 11 trained successfully and passed
+structured validity (5/5), measurement fidelity (20/20), privacy (20/20), and
+approval improvement (6/20 adapter approvals versus 1/20 base approvals), but
+failed the 80% quality gate: only 6/20 adapter answers were rated 4 or 5. No
+quarantined adapter may be uploaded or deployed. The website therefore remains
+on the open base model while new, genuinely corrected examples are collected.
 
 `human_export` remains the production-quality mode. Set
 `TRAINING_DATA_MODE = 'human_export'` in the notebook to use the private admin

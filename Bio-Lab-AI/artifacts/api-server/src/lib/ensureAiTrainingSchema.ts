@@ -61,6 +61,15 @@ export async function ensureAiTrainingSchema(): Promise<void> {
       ALTER TABLE ai_training_examples
         ALTER COLUMN schema_version SET DEFAULT 2
     `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ai_daily_usage (
+        usage_day date PRIMARY KEY,
+        request_count integer NOT NULL DEFAULT 0,
+        updated_at timestamp with time zone NOT NULL DEFAULT now(),
+        CONSTRAINT ai_daily_usage_request_count_check
+          CHECK (request_count >= 0)
+      )
+    `);
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");

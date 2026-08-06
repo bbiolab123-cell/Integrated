@@ -14,15 +14,14 @@ human feedback.
 
 ## Current release status
 
-Iterations 3–10 are quarantined and not deployable. Iteration 10 completed on
-its audited 1,280-example dataset with 40% adapter approval versus 15% for the
-base. It passed structured validity (5/5), privacy (20/20), and the 15-point
-improvement gate, but failed measurement fidelity (18/20) and the required 80%
-quality rate (8/20 rated 4 or 5). Its review was AI-assisted at the owner's
-explicit request and is not a human scientist/owner rating. Iteration 11 is
-prepared as a deterministic 1,520-example dataset with a fresh 20-example test
-split; no score from an earlier iteration may be reused as an iteration-11
-release result.
+Iterations 3–11 are quarantined and not deployable. Iteration 11 completed on
+its audited 1,520-example dataset. It passed structured validity (5/5),
+measurement fidelity (20/20), privacy (20/20), and approval improvement (30%
+adapter approval versus 5% for the base), but failed the required 80% quality
+rate because only 6/20 adapter answers were rated 4 or 5. Its AI-assisted review
+at the owner's explicit request is not a substitute for a human
+scientist/owner rating. The adapter remains private and must not be uploaded to
+Cloudflare or selected by the production API.
 
 ## Blind scientific review
 
