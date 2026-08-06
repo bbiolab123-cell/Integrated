@@ -8,10 +8,14 @@ import { sanitizeAiText, sanitizeAiValue } from "./sanitize";
 import {
   AiProviderError,
   CloudflareAiProvider,
+  readCloudflareAiDeploymentInfo,
   setAiProviderForTests,
   type AiProvider,
 } from "@workspace/integrations-ai";
-import { aiDailyQuota } from "../../middlewares/rateLimit";
+import {
+  aiDailyQuota,
+  setAiDailyQuotaStoreForTests,
+} from "../../middlewares/rateLimit";
 import type { NextFunction, Request, Response } from "express";
 
 test("sanitizer removes identifiers, secrets, file names, paths, and configured names", () => {
@@ -160,6 +164,55 @@ test("Cloudflare provider translates non-streaming and SSE responses", async () 
   }
 });
 
+test("Cloudflare deployment blocks unapproved adapters and public rollout before smoke tests", () => {
+  const sha = "a".repeat(64);
+  const base = {
+    CLOUDFLARE_ACCOUNT_ID: "account",
+    CLOUDFLARE_API_TOKEN: "token",
+    CLOUDFLARE_MODEL: "@cf/mistral/mistral-7b-instruct-v0.2-lora",
+    CLOUDFLARE_LORA_ID: "adapter-id",
+  } as NodeJS.ProcessEnv;
+
+  assert.throws(
+    () => readCloudflareAiDeploymentInfo(base),
+    /blocked until AI_LORA_RELEASE_STATUS=accepted/,
+  );
+  assert.throws(
+    () => readCloudflareAiDeploymentInfo({
+      ...base,
+      AI_LORA_RELEASE_STATUS: "accepted",
+      AI_LORA_DATASET_SHA256: sha,
+      AI_LORA_ADAPTER_SHA256: sha,
+      AI_LORA_RELEASE_REPORT_SHA256: sha,
+      AI_ROLLOUT_PERCENT: "10",
+    }),
+    /public rollout is blocked/,
+  );
+
+  const ownerOnly = readCloudflareAiDeploymentInfo({
+    ...base,
+    AI_LORA_RELEASE_STATUS: "accepted",
+    AI_LORA_DATASET_SHA256: sha,
+    AI_LORA_ADAPTER_SHA256: sha,
+    AI_LORA_RELEASE_REPORT_SHA256: sha,
+    AI_LORA_PRODUCTION_SMOKE_STATUS: "pending",
+    AI_ROLLOUT_PERCENT: "0",
+  });
+  assert.equal(ownerOnly.adapterEnabled, true);
+  assert.equal(ownerOnly.productionSmokeStatus, "pending");
+
+  const publicRollout = readCloudflareAiDeploymentInfo({
+    ...base,
+    AI_LORA_RELEASE_STATUS: "accepted",
+    AI_LORA_DATASET_SHA256: sha,
+    AI_LORA_ADAPTER_SHA256: sha,
+    AI_LORA_RELEASE_REPORT_SHA256: sha,
+    AI_LORA_PRODUCTION_SMOKE_STATUS: "passed",
+    AI_ROLLOUT_PERCENT: "10",
+  });
+  assert.equal(publicRollout.productionSmokeStatus, "passed");
+});
+
 test("structured generation retries a transient provider error and repairs invalid JSON once", async () => {
   const previousDatabase = process.env.DATABASE_URL;
   const previousRecording = process.env.AI_RECORD_GENERATIONS;
@@ -203,7 +256,7 @@ test("structured generation retries a transient provider error and repairs inval
   }
 });
 
-test("daily quota returns a clear limit response without invoking the handler", () => {
+test("daily quota returns a clear limit response without invoking the handler", async () => {
   const previousLimit = process.env.AI_DAILY_REQUEST_LIMIT;
   const previousRollout = process.env.AI_ROLLOUT_PERCENT;
   process.env.AI_DAILY_REQUEST_LIMIT = "1";
@@ -228,19 +281,59 @@ test("daily quota returns a clear limit response without invoking the handler", 
   } as unknown as Response;
   const next = (() => { nextCalls += 1; }) as NextFunction;
   const request = { userId: "quota_test_user" } as unknown as Request;
+  let used = 0;
+  setAiDailyQuotaStoreForTests({
+    async consume(_day, limit) {
+      if (used >= limit) return { allowed: false, used };
+      used += 1;
+      return { allowed: true, used };
+    },
+  });
 
   try {
-    aiDailyQuota(request, response, next);
+    await aiDailyQuota(request, response, next);
     assert.equal(nextCalls, 1);
     assert.equal(headers.get("AI-Daily-Remaining"), "0");
 
-    aiDailyQuota(request, response, next);
+    await aiDailyQuota(request, response, next);
     assert.equal(nextCalls, 1);
     assert.equal(statusCode, 429);
     assert.match((payload as { error: string }).error, /free daily AI limit/i);
   } finally {
+    setAiDailyQuotaStoreForTests(null);
     if (previousLimit === undefined) delete process.env.AI_DAILY_REQUEST_LIMIT;
     else process.env.AI_DAILY_REQUEST_LIMIT = previousLimit;
+    if (previousRollout === undefined) delete process.env.AI_ROLLOUT_PERCENT;
+    else process.env.AI_ROLLOUT_PERCENT = previousRollout;
+  }
+});
+
+test("daily quota fails closed when the persistent counter is unavailable", async () => {
+  const previousRollout = process.env.AI_ROLLOUT_PERCENT;
+  process.env.AI_ROLLOUT_PERCENT = "100";
+  let nextCalls = 0;
+  let statusCode = 200;
+  let payload: unknown;
+  setAiDailyQuotaStoreForTests({
+    async consume() {
+      throw new Error("database unavailable");
+    },
+  });
+  const response = {
+    status(value: number) { statusCode = value; return this; },
+    json(value: unknown) { payload = value; return this; },
+  } as unknown as Response;
+  try {
+    await aiDailyQuota(
+      { userId: "quota_store_failure_user" } as unknown as Request,
+      response,
+      (() => { nextCalls += 1; }) as NextFunction,
+    );
+    assert.equal(nextCalls, 0);
+    assert.equal(statusCode, 503);
+    assert.equal((payload as { code: string }).code, "AI_QUOTA_UNAVAILABLE");
+  } finally {
+    setAiDailyQuotaStoreForTests(null);
     if (previousRollout === undefined) delete process.env.AI_ROLLOUT_PERCENT;
     else process.env.AI_ROLLOUT_PERCENT = previousRollout;
   }

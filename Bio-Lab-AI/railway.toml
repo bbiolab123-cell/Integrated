@@ -13,7 +13,7 @@
 
 [build]
 builder = "NIXPACKS"
-buildCommand = "npm install -g pnpm@9 && pnpm install --frozen-lockfile && pnpm run build"
+buildCommand = "corepack enable && corepack prepare pnpm@11.9.0 --activate && pnpm install --frozen-lockfile && pnpm run build"
 
 [deploy]
 startCommand = "node artifacts/api-server/dist/index.mjs"

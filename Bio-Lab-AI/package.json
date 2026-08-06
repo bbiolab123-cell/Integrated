@@ -1,13 +1,14 @@
 {
   "name": "workspace",
   "version": "0.0.0",
+  "packageManager": "pnpm@11.9.0",
   "license": "MIT",
   "scripts": {
     "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
     "build": "pnpm run typecheck && pnpm -r --if-present run build",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
-    "training:validate": "python3 training/build_public_bootstrap_dataset.py --self-test && python3 training/validate_notebook.py",
+    "training:validate": "python3 training/build_public_bootstrap_dataset.py --self-test && python3 -m py_compile training/build_public_bootstrap_dataset.py training/build_public_bootstrap_iteration2.py training/build_public_bootstrap_iteration3.py training/build_public_bootstrap_iteration4.py training/build_public_bootstrap_iteration5.py training/validate_notebook.py && python3 training/validate_notebook.py",
     "test": "pnpm --filter @workspace/api-server test && pnpm run training:validate"
   },
   "private": true,

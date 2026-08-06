@@ -19,13 +19,14 @@ base builder makes 200 examples without calling an LLM:
   [Caduceus](https://huggingface.co/datasets/Kquant03/Caduceus-Dataset) at
   pinned revision `210c578a82a18455fe337d6c3261759eaa7c7d53` (CC BY 4.0).
 
-Iterations 2–4 deterministically extend that pinned base. The current fourth
-iteration contains exactly 380 unique examples with a 340/20/20
+Iterations 2–11 deterministically extend that pinned base. The current eleventh
+iteration contains exactly 1,520 unique examples with a 1,480/20/20
 train/validation/test split and fingerprint
-`423530e9aefdd14361b265f1ba0b86faf1baf7315385026f4f86e9fce82a37b7`.
-It promotes iteration-3 holdouts to training-only data, adds 40 targeted
-contract replays, and creates fresh independent holdouts covering all nine site
-tasks. The converter balances PubMedQA's yes/no/maybe decisions, removes public
+`cdce3114a0c963510305da2c5c435c30295562adf7803c46c3dfbda79baef3c6`.
+It promotes iteration-10 holdouts to training-only data, adds 200 focused
+decision, measurement ownership, scope, consistency, actionability, and schema replays, and
+creates fresh independent holdouts covering all nine site tasks. The converter
+balances PubMedQA's yes/no/maybe decisions, removes public
 author metadata from training text, and writes attribution to a separate source
 manifest. Protocol targets are bounded at paragraph or line
 boundaries and the complete target excerpt must also appear as source notes in
@@ -35,10 +36,12 @@ duplicates, privacy-pattern matches, group leakage, missing tasks, or incorrect
 split/count fingerprints. No model output is used as a training label.
 Generated JSONL and manifests are ignored by Git.
 
-Iteration 3 is quarantined: its blind review achieved 40% approval versus 0%
-for the base, but failed structured validity, exact measurement fidelity, and
-the 80% quality gate. It must not be uploaded or deployed. Iteration 4 exists to
-correct those failures and must pass every release gate independently.
+Iterations 3–11 are quarantined. Iteration 11 trained successfully and passed
+structured validity (5/5), measurement fidelity (20/20), privacy (20/20), and
+approval improvement (6/20 adapter approvals versus 1/20 base approvals), but
+failed the 80% quality gate: only 6/20 adapter answers were rated 4 or 5. No
+quarantined adapter may be uploaded or deployed. The website therefore remains
+on the open base model while new, genuinely corrected examples are collected.
 
 `human_export` remains the production-quality mode. Set
 `TRAINING_DATA_MODE = 'human_export'` in the notebook to use the private admin
@@ -112,7 +115,7 @@ Run the cells in order. The notebook will stop instead of weakening a gate. It:
 - tokenizes every example before training and refuses any example that would
   be truncated at 2,048 tokens;
 - trains only completion tokens using 4-bit NF4 QLoRA, rank 8, `q_proj` and
-  `v_proj`, alpha 16, dropout 0.05, two epochs, learning rate `2e-4`, and
+  `v_proj`, alpha 16, dropout 0.05, two epochs, learning rate `3e-5`, and
   effective batch size 16;
 - writes restart-safe checkpoints every five optimizer steps to private Google
   Drive in Colab or the private notebook output in Kaggle;

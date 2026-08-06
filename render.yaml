@@ -1,0 +1,54 @@
+services:
+  - type: web
+    name: biolab-copilot-api
+    runtime: node
+    plan: free
+    rootDir: Bio-Lab-AI
+    buildCommand: corepack enable && corepack prepare pnpm@11.9.0 --activate && pnpm install --frozen-lockfile && pnpm run typecheck && pnpm --filter @workspace/api-server run build
+    startCommand: node artifacts/api-server/dist/index.mjs
+    healthCheckPath: /api/healthz
+    autoDeployTrigger: checksPass
+    maxShutdownDelaySeconds: 30
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 22.16.0
+      - key: DATABASE_URL
+        sync: false
+      - key: CLERK_SECRET_KEY
+        sync: false
+      - key: AI_PROVIDER
+        value: cloudflare
+      - key: CLOUDFLARE_ACCOUNT_ID
+        sync: false
+      - key: CLOUDFLARE_API_TOKEN
+        sync: false
+      - key: CLOUDFLARE_MODEL
+        value: "@cf/mistral/mistral-7b-instruct-v0.2-lora"
+      - key: AI_LORA_RELEASE_STATUS
+        value: base
+      - key: AI_LORA_PRODUCTION_SMOKE_STATUS
+        value: pending
+      - key: AI_ROLLOUT_PERCENT
+        value: "0"
+      - key: AI_ROLLOUT_OWNER_USER_IDS
+        sync: false
+      - key: AI_TRAINING_ADMIN_USER_IDS
+        sync: false
+      - key: AI_TRAINING_HASH_SECRET
+        sync: false
+      - key: AI_DAILY_REQUEST_LIMIT
+        value: "50"
+      - key: AI_RATE_LIMIT_MAX
+        value: "20"
+      - key: AI_RATE_LIMIT_WINDOW_MS
+        value: "900000"
+      - key: AI_RECORD_GENERATIONS
+        value: "true"
+      - key: ADMIN_EMAILS
+        sync: false
+      - key: CORS_ORIGINS
+        value: https://biolab-copilot.vercel.app
+      - key: ALLOW_VERCEL_PREVIEWS
+        value: "false"
