@@ -24,6 +24,11 @@ export const experiments = pgTable("experiments", {
   // Scientist-defined well roles and deterministic control metrics. Persisted so
   // every AI surface uses the same controls instead of guessing from plate order.
   control_summary_json: text("control_summary_json"),
+  // Raw per-well role map (pos/neg/sample/blank), keyed by well ID (e.g. "A1").
+  // This is the editable plate layout itself, distinct from control_summary_json
+  // (a derived aggregate) — persisted so the layout survives across devices
+  // instead of living only in browser localStorage.
+  plate_layout_json: text("plate_layout_json"),
   ai_summary: text("ai_summary"),
   ai_summary_request_id: text("ai_summary_request_id"),
   ai_next_experiments_json: text("ai_next_experiments_json"),

@@ -129,18 +129,60 @@ export function ExperimentDetail() {
     } catch { /* ignore */ }
   }, [expId, passThreshold, passDirection]);
 
-  // Load saved plate layout for this experiment.
+  // Load this experiment's plate layout: prefer the server (survives across
+  // devices), fall back to the local cache, and migrate a local-only layout up
+  // to the server so it stops being tied to this one browser.
   useEffect(() => {
     skipLayoutPersistRef.current = true;
-    let r: Record<string, WellRole> = {};
-    try {
-      const raw = expId ? localStorage.getItem(`layout:${expId}`) : null;
-      if (raw) r = JSON.parse(raw) || {};
-    } catch { /* ignore */ }
-    setWellRoles(r);
+    let cancelled = false;
+
+    const readLocal = (): Record<string, WellRole> | null => {
+      try {
+        const raw = expId ? localStorage.getItem(`layout:${expId}`) : null;
+        return raw ? JSON.parse(raw) || null : null;
+      } catch {
+        return null;
+      }
+    };
+
+    if (!expId) {
+      setWellRoles({});
+      return;
+    }
+
+    (async () => {
+      try {
+        const res = await apiFetch(`/api/experiments/${expId}/layout`);
+        if (cancelled) return;
+        if (res.ok) {
+          const data = await res.json();
+          const serverRoles = data?.roles as Record<string, WellRole> | null;
+          if (serverRoles && Object.keys(serverRoles).length > 0) {
+            setWellRoles(serverRoles);
+            try { localStorage.setItem(`layout:${expId}`, JSON.stringify(serverRoles)); } catch { /* ignore */ }
+            return;
+          }
+        }
+      } catch { /* offline or request failed — fall back to the local cache below */ }
+
+      if (cancelled) return;
+      const local = readLocal();
+      setWellRoles(local ?? {});
+      if (local && Object.keys(local).length > 0) {
+        apiFetch(`/api/experiments/${expId}/layout`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ roles: local }),
+        }).catch(() => { /* best-effort migration; local cache still has it */ });
+      }
+    })();
+
+    return () => { cancelled = true; };
   }, [expId]);
 
-  // Persist layout on change (skip the write caused by the load above).
+  // Persist layout on change (skip the write caused by the load above): the
+  // local cache updates immediately, the server save is debounced so dragging
+  // across several wells doesn't fire a request per click.
   useEffect(() => {
     if (skipLayoutPersistRef.current) { skipLayoutPersistRef.current = false; return; }
     if (!expId) return;
@@ -148,6 +190,15 @@ export function ExperimentDetail() {
       if (Object.keys(wellRoles).length === 0) localStorage.removeItem(`layout:${expId}`);
       else localStorage.setItem(`layout:${expId}`, JSON.stringify(wellRoles));
     } catch { /* ignore */ }
+
+    const timer = setTimeout(() => {
+      apiFetch(`/api/experiments/${expId}/layout`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roles: Object.keys(wellRoles).length > 0 ? wellRoles : null }),
+      }).catch(() => { /* best-effort; local cache still has it */ });
+    }, 800);
+    return () => clearTimeout(timer);
   }, [expId, wellRoles]);
 
   const assignWell = (well: string) =>

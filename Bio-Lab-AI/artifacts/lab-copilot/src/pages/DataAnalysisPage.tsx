@@ -695,17 +695,40 @@ export function DataAnalysisPage() {
   const isPlate96 = parsedSelectedSummary?.kind === "plate96";
 
   // Read-only: the same control-well markings the scientist made on the
-  // experiment page (localStorage key `layout:${id}`), so the heatmap/dose-
-  // response here stay visually consistent without a second editor to maintain.
+  // experiment page, so the heatmap/dose-response here stay visually consistent
+  // without a second editor to maintain. Prefers the server copy (marked on any
+  // device) and falls back to this browser's cache.
   const [wellRoles, setWellRoles] = useState<Record<string, WellRole>>({});
   useEffect(() => {
     if (!selectedId) { setWellRoles({}); return; }
-    try {
-      const raw = localStorage.getItem(`layout:${selectedId}`);
-      setWellRoles(raw ? JSON.parse(raw) || {} : {});
-    } catch {
-      setWellRoles({});
-    }
+    let cancelled = false;
+
+    const readLocal = (): Record<string, WellRole> => {
+      try {
+        const raw = localStorage.getItem(`layout:${selectedId}`);
+        return raw ? JSON.parse(raw) || {} : {};
+      } catch {
+        return {};
+      }
+    };
+
+    (async () => {
+      try {
+        const res = await apiFetch(`/api/experiments/${selectedId}/layout`);
+        if (cancelled) return;
+        if (res.ok) {
+          const data = await res.json();
+          const serverRoles = data?.roles as Record<string, WellRole> | null;
+          if (serverRoles && Object.keys(serverRoles).length > 0) {
+            setWellRoles(serverRoles);
+            return;
+          }
+        }
+      } catch { /* fall back to the local cache below */ }
+      if (!cancelled) setWellRoles(readLocal());
+    })();
+
+    return () => { cancelled = true; };
   }, [selectedId]);
   const controlSummary = isPlate96 && parsedSelectedSummary && "wells" in parsedSelectedSummary && Array.isArray(parsedSelectedSummary.wells)
     ? buildControlSummary(parsedSelectedSummary.wells, wellRoles)

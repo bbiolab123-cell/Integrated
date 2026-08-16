@@ -306,6 +306,73 @@ router.put("/experiments/:id", async (req, res) => {
   }
 });
 
+const WELL_ROLES = new Set(["pos", "neg", "sample", "blank"]);
+
+function normalizeWellRoles(input: unknown): Record<string, string> | null {
+  if (input === null || input === undefined) return null;
+  if (typeof input !== "object" || Array.isArray(input)) return null;
+  const out: Record<string, string> = {};
+  for (const [well, role] of Object.entries(input as Record<string, unknown>)) {
+    if (WELL_ID_RE.test(well) && typeof role === "string" && WELL_ROLES.has(role)) {
+      out[well] = role;
+    }
+  }
+  return out;
+}
+
+// Plate layout (which wells are positive/negative control, sample, or blank) —
+// persisted server-side so it survives across devices/browsers instead of living
+// only in localStorage, and so the layout the scientist actually marked is what
+// every AI surface grounds on. Kept as dedicated routes (not folded into the
+// general PUT /experiments/:id) so this doesn't need an OpenAPI/codegen round
+// trip — same pattern as control_summary below.
+router.get("/experiments/:id/layout", async (req, res) => {
+  try {
+    const userId = getRequestUserId(req);
+    const id = parseInt(String(req.params.id), 10);
+    const rows = await db.select({ plate_layout_json: experiments.plate_layout_json })
+      .from(experiments)
+      .where(and(eq(experiments.id, id), eq(experiments.user_id, userId)))
+      .limit(1);
+    if (!rows[0]) {
+      return res.status(404).json({ error: "Experiment not found" });
+    }
+    let roles: Record<string, string> | null = null;
+    if (rows[0].plate_layout_json) {
+      try { roles = JSON.parse(rows[0].plate_layout_json); } catch { roles = null; }
+    }
+    return res.json({ roles });
+  } catch (err) {
+    req.log.error({ err }, "Failed to get plate layout");
+    return res.status(500).json({ error: "Failed to get plate layout" });
+  }
+});
+
+router.put("/experiments/:id/layout", async (req, res) => {
+  try {
+    const userId = getRequestUserId(req);
+    const id = parseInt(String(req.params.id), 10);
+    const body = requestBody(req.body);
+    const rolesInput = "roles" in body ? body.roles : undefined;
+    if (rolesInput !== null && rolesInput !== undefined && (typeof rolesInput !== "object" || Array.isArray(rolesInput))) {
+      return res.status(400).json({ error: "roles must be an object mapping well IDs to a role, or null" });
+    }
+    const normalized = normalizeWellRoles(rolesInput ?? null);
+    const layoutJson = normalized && Object.keys(normalized).length > 0 ? JSON.stringify(normalized) : null;
+    const updated = await db.update(experiments)
+      .set({ plate_layout_json: layoutJson, updated_at: new Date() })
+      .where(and(eq(experiments.id, id), eq(experiments.user_id, userId)))
+      .returning({ plate_layout_json: experiments.plate_layout_json });
+    if (!updated[0]) {
+      return res.status(404).json({ error: "Experiment not found" });
+    }
+    return res.json({ roles: layoutJson ? normalized : null });
+  } catch (err) {
+    req.log.error({ err }, "Failed to save plate layout");
+    return res.status(400).json({ error: "Failed to save plate layout" });
+  }
+});
+
 router.delete("/experiments/:id", async (req, res) => {
   try {
     const userId = getRequestUserId(req);
