@@ -426,7 +426,7 @@ function fmtConc(x: number): string {
 // for dose-response, config it read from the scientist's own question). Every
 // number plotted here is computed from the real wells, never from the AI's
 // response text.
-function QuantifyChart({ spec, wells }: { spec: QuantifyChartSpec; wells: PlateWell[] }) {
+function QuantifyChart({ spec, wells, roles }: { spec: QuantifyChartSpec; wells: PlateWell[]; roles?: Record<string, WellRole> }) {
   const tooltipStyle = {
     contentStyle: { background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 },
     itemStyle: { color: "hsl(var(--popover-foreground))" },
@@ -483,14 +483,20 @@ function QuantifyChart({ spec, wells }: { spec: QuantifyChartSpec; wells: PlateW
   let series = cfg.orientation === "column"
     ? ROWS.map((r) => wellMap.get(`${r}${cfg.index}`)).filter((w): w is PlateWell => !!w)
     : COLS.map((c) => wellMap.get(`${cfg.index}${c}`)).filter((w): w is PlateWell => !!w);
-  series = series.filter((w) => w.value !== null && w.status !== "blank");
   if (cfg.reverse) series = [...series].reverse();
 
-  if (series.length < 4) {
+  // Dose follows a well's POSITION in the dilution series, so doses are assigned
+  // across the whole row/column before unusable wells are dropped — filtering
+  // first slid every later well onto its neighbour's concentration.
+  const doses = serialDilution(cfg.top_concentration, cfg.dilution_factor > 1 ? cfg.dilution_factor : 2, series.length);
+  const points = series
+    .map((w, i) => ({ well: w, dose: doses[i] }))
+    .filter(({ well }) => well.value !== null && roles?.[well.well] !== "blank")
+    .map(({ well, dose }) => ({ dose, response: well.value as number, well: well.well }));
+
+  if (points.length < 4) {
     return <p className="text-xs text-muted-foreground">Not enough wells along that {cfg.orientation} to fit a curve (need at least 4).</p>;
   }
-  const doses = serialDilution(cfg.top_concentration, cfg.dilution_factor > 1 ? cfg.dilution_factor : 2, series.length);
-  const points = series.map((w, i) => ({ dose: doses[i], response: w.value as number, well: w.well }));
   const fit = fit4PL(points);
   if (!fit) return <p className="text-xs text-muted-foreground">Couldn't fit a dose-response curve to this data.</p>;
 
@@ -540,7 +546,7 @@ function QuantifyChart({ spec, wells }: { spec: QuantifyChartSpec; wells: PlateW
  * data" chat below, so both surfaces show one continuous history. The AI never
  * invents chart data: every plotted number is computed here from the real wells.
  */
-function QuantifyBox({ experimentId, conversationId, wells }: { experimentId: number; conversationId: number; wells: PlateWell[] }) {
+function QuantifyBox({ experimentId, conversationId, wells, roles }: { experimentId: number; conversationId: number; wells: PlateWell[]; roles?: Record<string, WellRole> }) {
   const queryClient = useQueryClient();
   const [question, setQuestion] = useState("");
   const [askedQuestion, setAskedQuestion] = useState("");
@@ -639,7 +645,7 @@ function QuantifyBox({ experimentId, conversationId, wells }: { experimentId: nu
             {chart && (
               <div className="pt-2 border-t border-border">
                 <div className="text-xs font-medium text-muted-foreground mb-2">{chart.title}</div>
-                <QuantifyChart spec={chart} wells={wells} />
+                <QuantifyChart spec={chart} wells={wells} roles={roles} />
               </div>
             )}
           </div>
@@ -1025,6 +1031,7 @@ export function DataAnalysisPage() {
                     experimentId={selectedId}
                     conversationId={selectedExp.conversation_id}
                     wells={parsedSelectedSummary.wells}
+                    roles={wellRoles}
                   />
                 )}
               </>

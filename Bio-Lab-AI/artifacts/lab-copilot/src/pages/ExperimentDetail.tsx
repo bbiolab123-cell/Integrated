@@ -758,6 +758,7 @@ export function ExperimentDetail() {
                   wells={rawData.wells}
                   meanPos={controlMetrics?.meanPos ?? null}
                   meanNeg={controlMetrics?.meanNeg ?? null}
+                  roles={wellRoles}
                 />
               </motion.div>
             )}

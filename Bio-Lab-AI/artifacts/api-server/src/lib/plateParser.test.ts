@@ -154,6 +154,32 @@ test("an empty or dataless sheet degrades to nulls instead of throwing", () => {
   assert.equal(result.wells.every((w) => w.value === null), true);
 });
 
+test("a real but low reading is 'low', not 'blank'", () => {
+  // The killed end of a dose-response reads at background but is still data.
+  // Calling it blank greyed it out and, worse, dropped it from the dose series
+  // before the IC50 was fitted.
+  const values = uniformPlate(1.0);
+  for (let c = 0; c < 12; c++) values[0][c] = 0.05; // whole top row killed
+  const result = parseSynergyH1Rows(plateRows(values));
+
+  const a1 = result.wells.find((w) => w.well === "A1");
+  assert.equal(a1?.value, 0.05);
+  assert.notEqual(a1?.status, "blank");
+  assert.equal(result.stats.blank_count, 0);
+  // Every well was read, so all 96 count toward the plate statistics.
+  assert.equal(result.stats.well_count, 96);
+});
+
+test("only an absent reading counts as blank", () => {
+  const values = uniformPlate(1.0);
+  const rows = plateRows(values);
+  (rows[rows.length - 8] as unknown[])[1] = ""; // A1 never read
+  const result = parseSynergyH1Rows(rows);
+
+  assert.equal(result.wells.find((w) => w.well === "A1")?.status, "blank");
+  assert.equal(result.stats.blank_count, 1);
+});
+
 test("high and low outliers are flagged against the 2-sigma band", () => {
   const values = uniformPlate(10);
   values[0][0] = 500; // unmistakable high outlier

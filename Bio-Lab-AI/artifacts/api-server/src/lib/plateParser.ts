@@ -192,7 +192,6 @@ export function parseSynergyH1Rows(rows: unknown[][]): PlateParseResult {
     max = Math.max(...allValues);
   }
 
-  const blankThreshold = min !== null && max !== null ? min + (max - min) * 0.05 : 0;
   const highThreshold = max !== null && mean !== null ? mean + 2 * (sd ?? 0) : Infinity;
   const lowThreshold = mean !== null ? mean - 2 * (sd ?? 0) : -Infinity;
 
@@ -201,8 +200,16 @@ export function parseSynergyH1Rows(rows: unknown[][]): PlateParseResult {
     for (let c = 0; c < 12; c++) {
       const val = readMatrix[r][c];
       const wellId = `${ROWS_ALPHA[r]}${COLS_NUM[c]}`;
+      // Only an absent reading is blank. This used to also claim anything in
+      // the bottom 5% of the plate's range, which on a real dose-response plate
+      // meant the fully-killed high-dose wells — genuine data at background —
+      // were reported as "no signal", greyed out on the heatmap, and dropped
+      // from the dose series before the curve was fitted. A real but low
+      // reading is "low", a status that already exists. Wells the scientist
+      // marks as blanks in the plate layout remain the way to exclude
+      // media-only wells.
       let status: WellData["status"] = "ok";
-      if (val === null || val <= blankThreshold) status = "blank";
+      if (val === null) status = "blank";
       else if (val > highThreshold) status = "high";
       else if (val < lowThreshold) status = "low";
 

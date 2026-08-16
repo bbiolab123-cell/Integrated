@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { TrendingDown, ChevronDown, ChevronRight } from "lucide-react";
 import { fit4PL, serialDilution, type DosePoint } from "@/lib/doseResponse";
-import { percentOfControl } from "@/lib/plateMetrics";
+import { percentOfControl, type WellRole } from "@/lib/plateMetrics";
 
 interface Well {
   well: string;
@@ -47,11 +47,15 @@ export function DoseResponseCard({
   wells,
   meanPos,
   meanNeg,
+  roles,
 }: {
   expId: number;
   wells: Well[];
   meanPos: number | null;
   meanNeg: number | null;
+  /** Plate layout. Wells the scientist marked as blanks are not part of the
+   *  dilution series and are excluded from the fit. */
+  roles?: Record<string, WellRole>;
 }) {
   const [cfg, setCfg] = useState<DoseConfig>(DEFAULT_CONFIG);
   const [expanded, setExpanded] = useState(false);
@@ -84,20 +88,33 @@ export function DoseResponseCard({
     let series: Well[] = cfg.orientation === "column"
       ? ROWS.map((r) => wellMap.get(`${r}${cfg.index}`)).filter((w): w is Well => !!w)
       : COLS.map((c) => wellMap.get(`${cfg.index}${c}`)).filter((w): w is Well => !!w);
-    series = series.filter((w) => w.value !== null && w.status !== "blank");
     if (cfg.reverse) series = [...series].reverse();
 
-    if (cfg.topConc == null || cfg.topConc <= 0 || series.length < 4) {
+    if (cfg.topConc == null || cfg.topConc <= 0) {
       return { points: [] as (DosePoint & { well: string })[], fit: null };
     }
+
+    // Dose comes from a well's POSITION in the dilution series, so doses are
+    // assigned across the full row/column first and unusable wells are dropped
+    // afterwards. Filtering before this shifted every later well onto its
+    // neighbour's concentration — one unread well silently rewrote the curve.
     const doses = serialDilution(cfg.topConc, cfg.dilution > 1 ? cfg.dilution : 2, series.length);
-    const pts = series.map((w, i) => ({
-      dose: doses[i],
-      response: normalize ? (percentOfControl(w.value as number, meanPos, meanNeg) ?? (w.value as number)) : (w.value as number),
-      well: w.well,
-    }));
+    const pts = series
+      .map((w, i) => ({ well: w, dose: doses[i] }))
+      .filter(({ well }) => well.value !== null && roles?.[well.well] !== "blank")
+      .map(({ well, dose }) => ({
+        dose,
+        response: normalize
+          ? (percentOfControl(well.value as number, meanPos, meanNeg) ?? (well.value as number))
+          : (well.value as number),
+        well: well.well,
+      }));
+
+    if (pts.length < 4) {
+      return { points: [] as (DosePoint & { well: string })[], fit: null };
+    }
     return { points: pts, fit: fit4PL(pts) };
-  }, [cfg, wellMap, normalize, meanPos, meanNeg]);
+  }, [cfg, wellMap, normalize, meanPos, meanNeg, roles]);
 
   return (
     <Card>
