@@ -27,6 +27,13 @@ import { getRequestUserId } from "../lib/requestUser";
 import { aiDailyQuota, aiRateLimiter } from "../middlewares/rateLimit";
 import { assertMaxChars } from "../lib/requestLimits";
 import { decodeUpload, UploadInputError } from "../lib/uploadValidation";
+import {
+  clampCellString,
+  MAX_CELL_CHARS,
+  parseSynergyH1Rows,
+  type PlateParseResult,
+  type WellData,
+} from "../lib/plateParser";
 import ExcelJS from "exceljs";
 import mammoth from "mammoth";
 
@@ -35,7 +42,6 @@ const MAX_WORKBOOK_ROWS = 512;
 const MAX_WORKBOOK_COLUMNS = 64;
 const MAX_TEXT_ROWS = 5_000;
 const MAX_TEXT_COLUMNS = 128;
-const MAX_CELL_CHARS = 500;
 const MAX_CONDITION_GROUPS = 100;
 const WELL_ID_RE = /^[A-H](?:[1-9]|1[0-2])$/;
 const ExperimentAnalysisSchema = z.object({
@@ -65,11 +71,6 @@ function writeAiStreamError(res: Response, message = "AI request failed. Please 
   }
   res.write(`data: ${JSON.stringify({ error: message })}\n\n`);
   res.end();
-}
-
-function clampCellString(value: string): string {
-  const trimmed = value.trim();
-  return trimmed.length > MAX_CELL_CHARS ? trimmed.slice(0, MAX_CELL_CHARS) : trimmed;
 }
 
 function excelCellValue(value: ExcelJS.CellValue): unknown {
@@ -1393,7 +1394,7 @@ router.post("/experiments/parse-synergy", async (req, res) => {
       return res.status(422).json({ error: "This spreadsheet is empty. Upload a Gen5 / Synergy H1 plate export with data." });
     }
 
-    const result = parseSynergyH1Rows(rows, file_name);
+    const result = parseSynergyH1Rows(rows);
     // A valid parse still yields zero readings when the sheet has no detectable
     // 8×12 grid (wrong export, transposed layout, or a non-plate sheet). Tell the
     // user instead of returning a blank heatmap.
@@ -1412,192 +1413,7 @@ router.post("/experiments/parse-synergy", async (req, res) => {
   }
 });
 
-interface WellData {
-  well: string;
-  row: string;
-  col: number;
-  value: number | null;
-  status: "ok" | "blank" | "high" | "low";
-  cv_pct: number | null;
-}
 
-interface PlateParseResult {
-  metadata: {
-    plate_name: string | null;
-    date: string | null;
-    protocol: string | null;
-    wavelength: string | null;
-    instrument: string | null;
-    read_type: string | null;
-  };
-  wells: WellData[];
-  stats: {
-    mean: number | null;
-    sd: number | null;
-    cv_pct: number | null;
-    min: number | null;
-    max: number | null;
-    blank_count: number;
-    well_count: number;
-  };
-  read_matrix: (number | null)[][];
-}
-
-function parseSynergyH1Rows(rows: unknown[][], filename: string): PlateParseResult {
-  const ROWS_ALPHA = ["A", "B", "C", "D", "E", "F", "G", "H"];
-  const COLS_NUM = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-
-  const metadata = {
-    plate_name: null as string | null,
-    date: null as string | null,
-    protocol: null as string | null,
-    wavelength: null as string | null,
-    instrument: null as string | null,
-    read_type: null as string | null,
-  };
-
-  const strVal = (v: unknown): string => (v != null ? clampCellString(String(v)) : "");
-
-  for (const row of rows) {
-    if (!Array.isArray(row)) continue;
-    const key = strVal(row[0]).toLowerCase();
-    const val = strVal(row[1]);
-    if (!val) continue;
-    if (key.includes("plate") || key.includes("plate name")) metadata.plate_name = val;
-    else if (key.includes("date")) metadata.date = val;
-    else if (key.includes("protocol")) metadata.protocol = val;
-    else if (key.includes("wavelength") || key.includes("wave length") || key === "read") metadata.wavelength = val;
-    else if (key.includes("instrument") || key.includes("reader")) metadata.instrument = val;
-    else if (key.includes("read type") || key.includes("assay")) metadata.read_type = val;
-  }
-
-  if (!metadata.instrument) metadata.instrument = "Synergy H1";
-
-  let plateStartRow = -1;
-  let colOffset = -1;
-
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    if (!Array.isArray(row)) continue;
-    let consecutiveNums = 0;
-    let firstNumIdx = -1;
-    for (let j = 0; j < row.length; j++) {
-      const v = row[j];
-      const n = typeof v === "number" ? v : parseInt(strVal(v), 10);
-      if (!isNaN(n) && n >= 1 && n <= 12) {
-        if (firstNumIdx === -1) firstNumIdx = j;
-        consecutiveNums++;
-      } else if (firstNumIdx !== -1) {
-        break;
-      }
-    }
-    if (consecutiveNums >= 8) {
-      plateStartRow = i + 1;
-      colOffset = firstNumIdx;
-      break;
-    }
-  }
-
-  if (plateStartRow === -1) {
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      if (!Array.isArray(row)) continue;
-      const firstCell = strVal(row[0]).toUpperCase();
-      if (firstCell === "A") {
-        let hasNumbers = false;
-        for (let j = 1; j < Math.min(row.length, 14); j++) {
-          const v = row[j];
-          const n = typeof v === "number" ? v : parseFloat(strVal(v));
-          if (!isNaN(n)) { hasNumbers = true; break; }
-        }
-        if (hasNumbers) {
-          plateStartRow = i;
-          colOffset = 1;
-          break;
-        }
-      }
-    }
-  }
-
-  const readMatrix: (number | null)[][] = Array.from({ length: 8 }, () =>
-    Array(12).fill(null)
-  );
-
-  if (plateStartRow !== -1) {
-    for (let r = 0; r < 8; r++) {
-      const rowIdx = plateStartRow + r;
-      if (rowIdx >= rows.length) break;
-      const row = rows[rowIdx];
-      if (!Array.isArray(row)) continue;
-      const rowLabel = strVal(row[0]).toUpperCase();
-      const rowAlphaIdx = ROWS_ALPHA.indexOf(rowLabel);
-      const targetRow = rowAlphaIdx >= 0 ? rowAlphaIdx : r;
-
-      for (let c = 0; c < 12; c++) {
-        const cellIdx = colOffset + c;
-        if (cellIdx >= row.length) continue;
-        const raw = row[cellIdx];
-        const n = typeof raw === "number" ? raw : parseFloat(strVal(raw));
-        if (!isNaN(n)) readMatrix[targetRow][c] = n;
-      }
-    }
-  }
-
-  const allValues = readMatrix.flat().filter((v): v is number => v !== null);
-  let mean: number | null = null;
-  let sd: number | null = null;
-  let cv_pct: number | null = null;
-  let min: number | null = null;
-  let max: number | null = null;
-
-  if (allValues.length > 0) {
-    mean = allValues.reduce((a, b) => a + b, 0) / allValues.length;
-    sd = Math.sqrt(allValues.reduce((a, b) => a + (b - mean!) ** 2, 0) / allValues.length);
-    cv_pct = mean !== 0 ? (sd / mean) * 100 : null;
-    min = Math.min(...allValues);
-    max = Math.max(...allValues);
-  }
-
-  const blankThreshold = min !== null && max !== null ? min + (max - min) * 0.05 : 0;
-  const highThreshold = max !== null && mean !== null ? mean + 2 * (sd ?? 0) : Infinity;
-  const lowThreshold = mean !== null ? mean - 2 * (sd ?? 0) : -Infinity;
-
-  const wells: WellData[] = [];
-  for (let r = 0; r < 8; r++) {
-    for (let c = 0; c < 12; c++) {
-      const val = readMatrix[r][c];
-      const wellId = `${ROWS_ALPHA[r]}${COLS_NUM[c]}`;
-      let status: WellData["status"] = "ok";
-      if (val === null || val <= blankThreshold) status = "blank";
-      else if (val > highThreshold) status = "high";
-      else if (val < lowThreshold) status = "low";
-
-      wells.push({
-        well: wellId,
-        row: ROWS_ALPHA[r],
-        col: COLS_NUM[c],
-        value: val,
-        status,
-        cv_pct: null,
-      });
-    }
-  }
-
-  return {
-    metadata,
-    wells,
-    stats: {
-      mean: mean !== null ? parseFloat(mean.toFixed(4)) : null,
-      sd: sd !== null ? parseFloat(sd.toFixed(4)) : null,
-      cv_pct: cv_pct !== null ? parseFloat(cv_pct.toFixed(2)) : null,
-      min: min !== null ? parseFloat(min.toFixed(4)) : null,
-      max: max !== null ? parseFloat(max.toFixed(4)) : null,
-      blank_count: wells.filter((w) => w.status === "blank").length,
-      well_count: allValues.length,
-    },
-    read_matrix: readMatrix,
-  };
-}
 
 async function parseFileContent(b64: string, filename: string): Promise<string> {
   try {
@@ -1606,7 +1422,7 @@ async function parseFileContent(b64: string, filename: string): Promise<string> 
     if (ext === "xlsx") {
       const rows = await readFirstWorksheetRows(buffer);
       if (!rows.length) return JSON.stringify({ error: "No rows found", filename });
-      const result = parseSynergyH1Rows(rows, filename);
+      const result = parseSynergyH1Rows(rows);
       return JSON.stringify({ ...result, _type: "plate96" });
     }
 
