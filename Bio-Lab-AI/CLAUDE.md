@@ -20,7 +20,7 @@
 | Database | PostgreSQL 16 + Drizzle ORM |
 | Validation | Zod v4, drizzle-zod, Orval codegen |
 | AI | Provider-neutral interface; Cloudflare Workers AI + Mistral 7B (streaming + JSON) |
-| Auth | Clerk (Replit-managed proxy in dev; direct keys in prod) |
+| Auth | Clerk (direct keys) |
 | Node | 24 |
 
 ---
@@ -37,12 +37,14 @@ Bio-Lab-AI/
 │   │       │   ├── index.ts       # Mounts all routers; requireAuth applied here
 │   │       │   ├── experiments.ts # ALL experiment routes (CRUD, analyze, compare, templates, tasks, comments)
 │   │       │   ├── gemini.ts      # Provider-neutral AI routes; filename retained for temporary aliases
+│   │       │   ├── projects.ts    # Projects, project chat/synthesis, context documents
+│   │       │   ├── aiTraining.ts  # Human corrections collected for adapter training
 │   │       │   ├── admin.ts       # Admin-only routes
 │   │       │   └── health.ts      # /api/healthz (public)
 │   │       └── middlewares/
 │   │           ├── requireAuth.ts         # Verifies Clerk session
 │   │           ├── requireAdmin.ts        # Admin email check
-│   │           └── clerkProxyMiddleware.ts # Replit-specific Clerk proxy
+│   │           └── rateLimit.ts            # Per-user AI rate limit + daily quota
 │   └── lab-copilot/      # React + Vite frontend, port 8081
 │       └── src/
 │           ├── App.tsx            # ClerkProvider, routing
@@ -56,6 +58,8 @@ Bio-Lab-AI/
 │           │   ├── DataAnalysisPage.tsx   # Deep SSE-streamed analysis report
 │           │   ├── TemplatesPage.tsx      # Experiment templates
 │           │   ├── TasksPage.tsx          # Global tasks view
+│           │   ├── ProjectsPage.tsx       # Projects list
+│           │   ├── ProjectDetail.tsx      # Project goal, experiments, docs, project chat
 │           │   ├── LandingPage.tsx        # Public landing (signed-out)
 │           │   └── AdminPage.tsx          # Admin panel
 │           └── components/
@@ -72,6 +76,8 @@ Bio-Lab-AI/
 │   ├── api-zod/                # Generated Zod request validators (do NOT edit manually)
 │   ├── db/src/schema/          # Drizzle schema — edit here to change DB
 │   └── integrations-ai/        # Provider interface + Cloudflare Workers AI client
+├── training/                   # LoRA adapter dataset builders, Colab/Kaggle notebook, release gates
+├── docs/                       # DATA_QUANTIFICATION_PROTOCOL.md — how the AI must quantify
 └── scripts/
     └── generate_synergy_h1.py  # Test data generator for Synergy H1 Excel files
 ```
@@ -157,6 +163,13 @@ VITE_ADMIN_EMAIL=you@example.com
 | `experimentTemplates` | id, name, assay_type, instrument, notes |
 | `recommendationActions` | id, experiment_id, recommendation_index, action_status, reviewer_name, reviewer_note |
 | `admins` | id, clerk_user_id, email |
+| `projects` | id, user_id, name, goal, status, ai_summary, conversation_id — optional grouping above experiments |
+| `projectDocuments` | id, project_id, name, content — context docs fed to the project copilot |
+| `aiTrainingExamples` | id, user_id, task, corrected output — human corrections for adapter training |
+
+`experiments` also carries `protocol_json` (structured SOP), `plate_layout_json`
+(per-well control roles), `control_summary_json` (derived control metrics), and
+`data_analysis_report`.
 
 **Edit schema** in `lib/db/src/schema/`, then run `pnpm --filter @workspace/db run push` (dev) or generate a migration for prod.
 
@@ -178,41 +191,32 @@ VITE_ADMIN_EMAIL=you@example.com
 
 ## Known Issues / Next Steps
 
-### ✅ FIXED — User Isolation
-`user_id text not null` added to `experiments`, `tasks`, `experimentComments`. All queries now filter by `getAuth(req).userId`. Run `pnpm --filter @workspace/db run push` against your DB to apply the schema change.
+Multi-user isolation, provider-neutral AI, Clerk auth, env-driven admin emails,
+template seeding, the onboarding empty state, and the `UnifiedExperimentData`
+types (`lib/db/src/schema/unified-data.ts` — use `parseRawData()` to read
+`raw_data_json`) are all done and no longer need tracking here.
 
-### ✅ FIXED — Provider-neutral AI
-`lib/integrations-ai` implements the provider contract and Cloudflare client. `/api/gemini/*` remains only as a temporary route alias and no longer calls Gemini.
+### 🔴 PENDING — the trained adapter is not serving traffic
+`training/` builds a Bio-Lab LoRA adapter (iteration 4 dataset, blind-review
+gates in `training/EVALUATION.md`), but `CLOUDFLARE_LORA_ID` is unset, so the
+app runs on the stock Mistral base. Training happens only in a free Colab/Kaggle
+GPU session and must pass every release gate before the ID is set and the staged
+owner → 10% → 50% → 100% rollout begins.
 
-### ✅ FIXED — Clerk Auth
-`clerkProxyMiddleware` removed from `app.ts`. Using standard `clerkMiddleware()` with `CLERK_SECRET_KEY` env var. Missing Clerk keys fail closed; unauthenticated demo mode requires explicit `ENABLE_DEMO_MODE=true` and `VITE_ENABLE_DEMO_MODE=true` in local development and is refused in production.
+### 🔴 PENDING — plate_layout_json migration
+`Integrated/PLATE_LAYOUT_SCHEMA.sql` (one idempotent `ADD COLUMN IF NOT EXISTS`)
+must be applied in Neon before the server-persisted plate layout works. Schema
+first, then code — otherwise the layout routes 500.
 
-### ✅ FIXED — Hardcoded Admin Email
-Admin email now read from `ADMIN_EMAILS` env var (server) and `VITE_ADMIN_EMAIL` (frontend).
+### 🟡 TODO — server-rendered PDF
+`printExperimentReport.ts` produces the report client-side via the browser print
+dialog, which is enough today. A real `GET /api/experiments/:id/report.pdf`
+(puppeteer) is only worth building if users need it unattended or emailed.
 
-### 🔴 PENDING — DB Schema Migration
-After pulling these changes, run against your production DB:
-```bash
-pnpm --filter @workspace/db run push
-```
-This adds the `user_id` column. **Existing rows will fail** — truncate or migrate them first.
-
-### ✅ DONE — Templates Seed Data
-5 templates seeded: MTT Cell Viability, ELISA (Sandwich), qPCR Gene Expression (ΔΔCt), Flow Cytometry Apoptosis, Western Blot.
-Run once after DB push:
-```bash
-DATABASE_URL=<your_url> pnpm --filter @workspace/scripts run seed-templates
-```
-
-### ✅ DONE — Onboarding Empty State
-`Dashboard.tsx` shows `<OnboardingEmptyState />` when `total_experiments === 0`.
-
-### 🟡 TODO — PDF Export
-`GET /api/experiments/:id/report.pdf` not yet built. Use puppeteer.
-
-### ✅ DONE — UnifiedExperimentData Schema
-`lib/db/src/schema/unified-data.ts` defines the canonical TypeScript types all instrument parsers must output to.
-All types exported from `@workspace/db`. Use `parseRawData(json)` to safely parse `raw_data_json` from DB.
+### 🟡 Feature flags still off from the narrow launch
+`compare`, `templates`, `tasks`, and `comments` are built and working but hidden
+in `artifacts/lab-copilot/src/lib/features.ts`. Set `VITE_ENABLE_ALL_FEATURES=true`
+to see them; flip individual flags when they belong in the product again.
 
 ---
 
@@ -237,7 +241,7 @@ Parsed result is stored as `raw_data_json` with `_type: "plate96"`. The `PlateHe
 
 ## Frontend Patterns
 
-- **Routing**: Wouter with `base={basePath}` (important for Replit subdomain deployment)
+- **Routing**: Wouter with `base={basePath}` (`BASE_PATH` defaults to `/`)
 - **Data fetching**: TanStack Query with generated hooks from `@workspace/api-client-react`
 - **Styling**: Tailwind + shadcn/ui components, dark mode via `next-themes`, CSS vars for colors
 - **Animation**: Framer Motion on most page/list transitions
@@ -247,36 +251,40 @@ Parsed result is stored as `raw_data_json` with `_type: "plate96"`. The `PlateHe
 
 ## Deployment
 
-### Railway (API server — recommended)
+**This is what actually runs today.** Both services auto-deploy from `main` —
+pushing to `main` ships to production with no human in the loop.
 
-`railway.toml` is already configured. Steps:
+| Piece | Target | Trigger |
+|---|---|---|
+| Frontend | Vercel | GitHub Actions `.github/workflows/deploy-vercel.yml` |
+| Backend (`artifacts/api-server` + `lib/**`) | Render | native auto-deploy on push to `main` |
+| Database | Neon | migrations applied by hand in the Neon SQL Editor |
 
-1. Push to GitHub
-2. New Railway project → "Deploy from GitHub repo"
-3. Add a **PostgreSQL plugin** — Railway auto-sets `DATABASE_URL`
-4. Set all env vars from `.env.example` in the Railway dashboard:
-   - `AI_PROVIDER`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, and `CLOUDFLARE_MODEL`
-   - `AI_ROLLOUT_OWNER_USER_IDS` and `AI_TRAINING_ADMIN_USER_IDS`
-   - `CLERK_SECRET_KEY`
-   - `ADMIN_EMAILS`
-5. Railway runs `pnpm install && pnpm run build` then `node artifacts/api-server/dist/index.mjs`
-6. After first deploy, run the DB migration + template seed:
-   ```bash
-   # In Railway shell (or locally with the Railway DATABASE_URL):
-   pnpm --filter @workspace/db run push
-   DATABASE_URL=<railway_url> pnpm --filter @workspace/scripts run seed-templates
-   ```
+A frontend-only change does not rebuild the backend, and vice versa — after
+pushing, confirm the service you actually changed redeployed.
 
-### Frontend (Vercel — recommended)
+Render's free tier sleeps when idle, so the first request after a quiet period
+cold-starts for 30–60s. That is expected, not a bug.
 
-1. Connect GitHub repo in Vercel
-2. Set **Root Directory** to `artifacts/lab-copilot`
-3. Build command: `cd ../.. && pnpm install && pnpm --filter @workspace/lab-copilot run build`
-4. Output directory: `dist/public`
-5. Set env vars: `VITE_CLERK_PUBLISHABLE_KEY`, `VITE_ADMIN_EMAIL`, `VITE_API_URL` (Railway API URL)
-6. `BASE_PATH` defaults to `/` — no override needed unless deploying to a sub-path
+`railway.toml` is vestigial from an earlier plan; nothing deploys to Railway.
 
-### Local dev (no Replit)
+### Backend env vars (Render)
+`DATABASE_URL`, `CLERK_SECRET_KEY`, `CLERK_PUBLISHABLE_KEY`, `ADMIN_EMAILS`,
+`AI_PROVIDER`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`,
+`CLOUDFLARE_MODEL`, `AI_ROLLOUT_OWNER_USER_IDS`, `AI_TRAINING_ADMIN_USER_IDS`.
+Both Clerk keys must come from the same Clerk instance or `getAuth` throws.
+
+### Frontend env vars (Vercel)
+`VITE_API_URL` (the Render URL), `VITE_CLERK_PUBLISHABLE_KEY`,
+`VITE_ADMIN_EMAIL`. These are baked in at build time — changing one needs a
+rebuild, not just a redeploy.
+
+### Seeding templates
+```bash
+DATABASE_URL=<neon_url> pnpm --filter @workspace/scripts run seed-templates
+```
+
+### Local dev
 
 ```bash
 cp .env.example .env   # fill in your values
