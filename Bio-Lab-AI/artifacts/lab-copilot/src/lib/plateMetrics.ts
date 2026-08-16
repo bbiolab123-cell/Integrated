@@ -112,6 +112,15 @@ export function computeControlMetrics(
   };
 }
 
+// Plate order, not string order: sorting well IDs as plain strings puts A10 and
+// A11 ahead of A2, so a control list handed to the AI (or read by a scientist)
+// came out scrambled.
+function compareWells(a: string, b: string): number {
+  const rowDiff = a.charCodeAt(0) - b.charCodeAt(0);
+  if (rowDiff !== 0) return rowDiff;
+  return parseInt(a.slice(1), 10) - parseInt(b.slice(1), 10);
+}
+
 export function buildControlSummary(
   wells: MetricWell[],
   roles: Record<string, WellRole>,
@@ -120,7 +129,7 @@ export function buildControlSummary(
   const byRole = (role: WellRole) => Object.entries(roles)
     .filter(([, assigned]) => assigned === role)
     .map(([well]) => well)
-    .sort();
+    .sort(compareWells);
   const positive = byRole("pos");
   const negative = byRole("neg");
   const blank = byRole("blank");
