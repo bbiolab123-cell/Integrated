@@ -66,18 +66,30 @@ export async function seedIfEmpty(): Promise<void> {
 
     const total = Number(count[0]?.count ?? 0);
     if (total > 0) {
-      logger.info({ total }, "Skipping seed — experiments already exist");
+      logger.info(
+        { database: "primary", existingExperimentCount: total, seedSkipped: true },
+        "Initial demo experiment seeding was skipped because the database already contains experiments; this is normal and existing data was left unchanged.",
+      );
       return;
     }
 
-    logger.info("No experiments found — seeding initial dataset");
+    logger.info(
+      { database: "primary", plannedInsertCount: SEED_EXPERIMENTS.length },
+      "No experiments exist, so the optional initial demo dataset is being inserted. No operator action is required unless this is not a demo environment.",
+    );
 
     for (const exp of SEED_EXPERIMENTS) {
       await db.insert(experiments).values({ ...exp, user_id: SEED_USER_ID });
     }
 
-    logger.info({ count: SEED_EXPERIMENTS.length }, "Seed complete");
+    logger.info(
+      { database: "primary", insertedCount: SEED_EXPERIMENTS.length },
+      "Initial demo experiment seeding completed successfully; the inserted records are available to the shared synthetic seed user.",
+    );
   } catch (err) {
-    logger.error({ err }, "Seed failed");
+    logger.error(
+      { err, database: "primary", attemptedInsertCount: SEED_EXPERIMENTS.length, retryExpected: true },
+      "Initial demo experiment seeding did not complete; the API remains available, but demo records may be absent or partial. Check database connectivity and write permissions before rerunning the idempotent seed task.",
+    );
   }
 }

@@ -9,6 +9,7 @@ import { z } from "zod";
 // from this file; going through it here would create a circular import.
 import { generateAiJson, type AiCallContext } from "./ai/service";
 import { numericAuditNotice } from "./ai/numericAudit";
+import { logger } from "./logger";
 
 export interface StructuredProtocol {
   objective: string;
@@ -62,7 +63,11 @@ export function parseStructuredProtocol(text: string): StructuredProtocol | null
       review_notes: stringArray(parsed.review_notes),
       changes_summary: stringArray(parsed.changes_summary),
     };
-  } catch {
+  } catch (err) {
+    logger.warn(
+      { err, field: "protocol_json", contentLength: text.length, fallback: "treat_protocol_as_unstructured_or_absent", retryExpected: false },
+      "Stored protocol JSON could not be parsed into the structured protocol format, so the caller will use unstructured data or treat the protocol as absent. Inspect the affected request and repair the stored protocol before relying on protocol-aware features.",
+    );
     return null;
   }
 }
@@ -110,7 +115,22 @@ export async function structureProtocolWithAI(
   }, StructuredProtocolSchema);
   if (context.taskType === "sop_structuring") {
     const auditNotice = numericAuditNotice(JSON.stringify(response.data), `${systemInstruction}\n${userPrompt}`);
-    if (auditNotice) response.data.review_notes.push(auditNotice);
+    if (auditNotice) {
+      logger.warn(
+        {
+          aiRequestId: response.requestId,
+          taskType: context.taskType,
+          userId: context.userId,
+          experimentId: context.experimentId,
+          projectId: context.projectId,
+          validationFailure: "ungrounded_numeric_claim",
+          responseAnnotated: true,
+          retryExpected: false,
+        },
+        "The AI-structured SOP introduced numeric claims that could not be traced to the uploaded document; the protocol was preserved with a human-review note. Verify the flagged values against the source SOP before use and investigate model quality if this recurs.",
+      );
+      response.data.review_notes.push(auditNotice);
+    }
   }
   return { protocol: response.data, requestId: response.requestId };
 }

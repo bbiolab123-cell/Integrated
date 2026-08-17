@@ -24,7 +24,11 @@ async function getVerifiedAdminEmail(req: Request): Promise<string> {
       user.emailAddresses.find((address) => address.id === user.primaryEmailAddressId) ??
       user.emailAddresses[0];
     return normalizeEmail(primaryEmail?.emailAddress || "");
-  } catch {
+  } catch (err) {
+    req.log.warn(
+      { err, authProvider: "clerk", userId: getRequestUserId(req), retryExpected: true },
+      "Admin email verification could not reach or read the Clerk user record, so this admin request will be denied. Check Clerk availability and the user's primary email record before retrying.",
+    );
     return "";
   }
 }

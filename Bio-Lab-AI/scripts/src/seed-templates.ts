@@ -15,8 +15,32 @@ import { experimentTemplates } from "@workspace/db/schema";
 
 const { Pool } = pg;
 
+function info(message: string, fields: Record<string, unknown> = {}): void {
+  console.log(JSON.stringify({ level: "info", component: "experiment-template-seed", message, ...fields }));
+}
+
+function errorDetails(err: unknown): Record<string, unknown> {
+  return err instanceof Error
+    ? { errorName: err.name, errorMessage: err.message, errorStack: err.stack }
+    : { error: err };
+}
+
+function error(message: string, err?: unknown, fields: Record<string, unknown> = {}): void {
+  console.error(JSON.stringify({
+    level: "error",
+    component: "experiment-template-seed",
+    message,
+    ...fields,
+    ...(typeof err === "undefined" ? {} : errorDetails(err)),
+  }));
+}
+
 if (!process.env.DATABASE_URL) {
-  console.error("❌  DATABASE_URL is not set.");
+  error(
+    "Experiment template seeding cannot start because DATABASE_URL is missing; no templates were changed. Set DATABASE_URL to the intended database and rerun the seed command.",
+    undefined,
+    { database: "primary", exitCode: 1, retryExpected: false },
+  );
   process.exit(1);
 }
 
@@ -162,7 +186,10 @@ const templates = [
 // ─────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log("🌱  Seeding experiment templates…\n");
+  info(
+    "Experiment template seeding started; existing templates will be preserved and only missing names will be inserted.",
+    { database: "primary", plannedTemplateCount: templates.length },
+  );
 
   let inserted = 0;
   let skipped = 0;
@@ -176,21 +203,34 @@ async function main() {
       .limit(1);
 
     if (existing.length > 0) {
-      console.log(`  ⏭️  Skipped (already exists): ${template.name}`);
+      info(
+        "An experiment template was skipped because a template with the same name already exists; this is normal for an idempotent seed and no action is required.",
+        { templateName: template.name, seedSkipped: true },
+      );
       skipped++;
       continue;
     }
 
     await db.insert(experimentTemplates).values(template);
-    console.log(`  ✅  Inserted: ${template.name}`);
+    info(
+      "An experiment template was inserted successfully; no operator action is required.",
+      { templateName: template.name },
+    );
     inserted++;
   }
 
-  console.log(`\n✨  Done. ${inserted} inserted, ${skipped} skipped.\n`);
+  info(
+    "Experiment template seeding completed successfully; skipped templates were already present and were left unchanged.",
+    { insertedCount: inserted, skippedCount: skipped, totalTemplateCount: templates.length },
+  );
   await pool.end();
 }
 
 main().catch((err) => {
-  console.error("❌  Seed failed:", err);
+  error(
+    "Experiment template seeding stopped before completion; templates inserted before the failure may remain, and rerunning is safe because existing names are skipped. Check database connectivity, schema, and write permissions before retrying.",
+    err,
+    { database: "primary", exitCode: 1, retryExpected: true },
+  );
   pool.end().finally(() => process.exit(1));
 });

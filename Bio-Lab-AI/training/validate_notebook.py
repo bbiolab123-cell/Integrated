@@ -129,7 +129,7 @@ def main() -> int:
         except SyntaxError as exc:
             fail(f"Code cell {index} is not valid Python after removing Colab magics: {exc}")
 
-    print(f"Validated {NOTEBOOK.name}: {len(cells)} clean cells and all required gates present.")
+    print(f"Training notebook validation passed for {NOTEBOOK.name}: {len(cells)} cells are clean and every required release gate is present. No operator action is required.")
     return 0
 
 
@@ -137,5 +137,8 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (AssertionError, json.JSONDecodeError) as error:
-        print(f"Training notebook validation failed: {error}", file=sys.stderr)
+        print(
+            f"Training notebook validation failed for {NOTEBOOK.name}; the notebook is not ready to run or release. Correct the reported gate or cell issue, then rerun validation. Error: {error}",
+            file=sys.stderr,
+        )
         raise SystemExit(1)

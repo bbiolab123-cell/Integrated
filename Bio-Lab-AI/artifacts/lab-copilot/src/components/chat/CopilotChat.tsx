@@ -106,13 +106,19 @@ export function CopilotChat({ conversationId }: CopilotChatProps) {
                 queryClient.invalidateQueries({ queryKey: getListAiMessagesQueryKey(conversationId) });
               }
             } catch (err) {
-              console.error("Parse error", err);
+              console.error(
+                "An AI conversation stream event could not be parsed, so the visible reply may be incomplete. Retry the message and inspect the API stream format if the problem repeats.",
+                { component: "experiment-copilot", conversationId, endpoint: `/api/ai/conversations/${conversationId}/messages`, error: err },
+              );
             }
           }
         }
       }
     } catch (error) {
-      console.error("Chat error:", error);
+      console.error(
+        "The AI conversation request did not complete, so no reliable assistant reply is available. Check browser connectivity and the correlated API request, then retry the message.",
+        { component: "experiment-copilot", conversationId, endpoint: `/api/ai/conversations/${conversationId}/messages`, retryExpected: true, error },
+      );
       setChatError(error instanceof Error ? error.message : "Couldn't reach the AI. Check your connection and try again.");
     } finally {
       setIsStreaming(false);

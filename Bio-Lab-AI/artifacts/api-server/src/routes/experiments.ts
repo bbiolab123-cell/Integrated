@@ -29,6 +29,7 @@ import { assertMaxChars } from "../lib/requestLimits";
 import { decodeUpload, UploadInputError } from "../lib/uploadValidation";
 import ExcelJS from "exceljs";
 import mammoth from "mammoth";
+import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 const MAX_WORKBOOK_ROWS = 512;
@@ -153,7 +154,10 @@ router.get("/experiments", async (req, res) => {
 
     res.json(rows);
   } catch (err) {
-    req.log.error({ err }, "Failed to list experiments");
+    req.log.error(
+      { err, database: "primary", statusCode: 500, retryExpected: true },
+      "Experiments could not be listed, so the client received no experiment collection. Check database connectivity and the supplied filters, then retry using the request ID for correlation.",
+    );
     res.status(500).json({ error: "Failed to list experiments" });
   }
 });
@@ -216,6 +220,10 @@ router.get("/experiments/dashboard", async (req, res) => {
       assay_type_breakdown: byAssay.map((r) => ({ assay_type: r.assay_type, count: Number(r.count) })),
     });
   } catch (err) {
+    req.log.error(
+      { err, database: "primary", statusCode: 500, retryExpected: true },
+      "Experiment dashboard metrics could not be calculated, so the dashboard response is unavailable. Check database connectivity and experiment aggregate queries before retrying.",
+    );
     res.status(500).json({ error: "Failed to get dashboard" });
   }
 });
@@ -232,6 +240,10 @@ router.get("/experiments/:id", async (req, res) => {
     }
     return res.json(rows[0]);
   } catch (err) {
+    req.log.error(
+      { err, database: "primary", experimentId: Number(req.params.id) || undefined, statusCode: 500, retryExpected: true },
+      "The requested experiment could not be loaded. Check database connectivity and the experiment record, then retry using the request ID for correlation.",
+    );
     return res.status(500).json({ error: "Failed to get experiment" });
   }
 });
@@ -276,9 +288,23 @@ router.post("/experiments", async (req, res) => {
 
     return res.status(201).json(inserted[0]);
   } catch (err) {
-    req.log.error({ err }, "Failed to create experiment");
     if (err instanceof UploadInputError) {
+      req.log.warn(
+        { err, fileName: optionalString(requestBody(req.body).file_name), statusCode: err.statusCode, retryExpected: false },
+        "Experiment creation was rejected because the attached data file failed upload validation; no experiment was created. Correct the file type, size, or encoding described by the error before retrying.",
+      );
       return res.status(err.statusCode).json({ error: err.message });
+    }
+    if (err instanceof z.ZodError) {
+      req.log.warn(
+        { err, validationIssueCount: err.issues.length, statusCode: 400, retryExpected: false },
+        "Experiment creation was rejected because the request body did not match the experiment contract; no experiment or conversation was created. Correct the required experiment fields before retrying.",
+      );
+    } else {
+      req.log.error(
+        { err, database: "primary", statusCode: 400, retryExpected: true },
+        "The experiment and its copilot conversation could not be created as one transaction, so no complete experiment was returned. Inspect database connectivity and constraints before retrying.",
+      );
     }
     return res.status(400).json({ error: "Failed to create experiment" });
   }
@@ -301,7 +327,17 @@ router.put("/experiments/:id", async (req, res) => {
     }
     return res.json(updated[0]);
   } catch (err) {
-    req.log.error({ err }, "Failed to update experiment");
+    if (err instanceof z.ZodError) {
+      req.log.warn(
+        { err, experimentId: Number(req.params.id) || undefined, validationIssueCount: err.issues.length, statusCode: 400, retryExpected: false },
+        "The experiment update was rejected because the request body did not match the update contract; the stored experiment is unchanged. Correct the submitted fields before retrying.",
+      );
+    } else {
+      req.log.error(
+        { err, database: "primary", experimentId: Number(req.params.id) || undefined, statusCode: 400, retryExpected: true },
+        "The requested experiment update could not be stored, so the existing experiment remains unchanged. Inspect database connectivity and constraints before retrying.",
+      );
+    }
     return res.status(400).json({ error: "Failed to update experiment" });
   }
 });
@@ -318,6 +354,10 @@ router.delete("/experiments/:id", async (req, res) => {
     }
     return res.status(204).send();
   } catch (err) {
+    req.log.error(
+      { err, database: "primary", experimentId: Number(req.params.id) || undefined, statusCode: 500, retryExpected: true },
+      "The requested experiment could not be deleted, so it may still be present. Inspect database connectivity and related-record constraints before retrying.",
+    );
     return res.status(500).json({ error: "Failed to delete experiment" });
   }
 });
@@ -347,16 +387,29 @@ router.post("/experiments/:id/data", async (req, res) => {
     try {
       const parsed = JSON.parse(rawDataJson) as { _type?: string; error?: string; stats?: { well_count?: number } };
       if (parsed.error) {
+        req.log.warn(
+          { experimentId: id, fileName, parserReason: parsed.error, statusCode: 422, retryExpected: false },
+          "The experiment data upload contained no usable measurements, so existing experiment data was not replaced. Export a supported plate matrix or delimited table and verify that it includes headers and data rows before retrying.",
+        );
         return res.status(422).json({
           error: "Couldn't read any data from this file. Upload a Gen5 / Synergy H1 .xlsx plate export, or a CSV/TSV with a header row.",
         });
       }
       if (parsed._type === "plate96" && (parsed.stats?.well_count ?? 0) === 0) {
+        req.log.warn(
+          { experimentId: id, fileName, detectedWellCount: parsed.stats?.well_count ?? 0, statusCode: 422, retryExpected: false },
+          "The experiment data upload was readable but no 96-well plate grid was detected, so existing data was not replaced. Export rows A–H and columns 1–12 as a matrix or use a supported delimited-table layout.",
+        );
         return res.status(422).json({
           error: "Couldn't find a 96-well plate grid in this file. Export the plate as a matrix (rows A–H, columns 1–12), or upload a CSV/TSV for other layouts.",
         });
       }
-    } catch { /* non-JSON parse result is handled below as-is */ }
+    } catch (err) {
+      req.log.warn(
+        { err, experimentId: id, fileName, fallback: "store_non_json_parse_result", retryExpected: false },
+        "The parsed upload could not be checked as structured JSON, so attachment is continuing with the parser's raw result; later AI analysis may have reduced context. Inspect the uploaded file and parser output if analysis quality is affected.",
+      );
+    }
 
     const [updated] = await db
       .update(experiments)
@@ -378,10 +431,17 @@ router.post("/experiments/:id/data", async (req, res) => {
     triggerProjectSynthesis(updated.project_id, userId);
     return res.json(updated);
   } catch (err) {
-    req.log.error({ err }, "Failed to attach data to experiment");
     if (err instanceof UploadInputError) {
+      req.log.warn(
+        { err, experimentId: Number(req.params.id) || undefined, fileName: optionalString(requestBody(req.body).file_name), statusCode: err.statusCode, retryExpected: false },
+        "Experiment data attachment was rejected because the upload failed validation; the experiment's existing data and analysis remain unchanged. Correct the file type, size, or encoding described by the error before retrying.",
+      );
       return res.status(err.statusCode).json({ error: err.message });
     }
+    req.log.error(
+      { err, experimentId: Number(req.params.id) || undefined, fileName: optionalString(requestBody(req.body).file_name), dependency: "database_or_file_parser", statusCode: 400, retryExpected: true },
+      "Experiment data could not be parsed and attached, so the prior data and analysis were not replaced. Verify the file format and inspect database or parser errors before retrying.",
+    );
     return res.status(400).json({ error: "Could not attach data. Upload a valid CSV, TSV, TXT, or XLSX export." });
   }
 });
@@ -472,7 +532,11 @@ ${PROTOCOL_JSON_FORMAT}`;
 
     return res.json({ ...protocol, ai_request_id: requestId });
   } catch (err) {
-    req.log.error({ err }, "Failed to generate protocol");
+    const statusCode = aiErrorStatus(err);
+    req.log.error(
+      { err, experimentId: Number(req.params.id) || undefined, statusCode, dependency: "database_or_ai_provider", retryExpected: statusCode === 429 || statusCode >= 500 },
+      "Experiment protocol generation failed before a validated protocol could be stored, so the previous protocol remains unchanged. Inspect the AI provider and experiment database record, then retry according to the status code.",
+    );
     return res.status(aiErrorStatus(err)).json({ error: "Failed to generate protocol" });
   }
 });
@@ -538,11 +602,25 @@ ${PROTOCOL_JSON_FORMAT}`;
 
     return res.json({ ...protocol, ai_request_id: requestId });
   } catch (err) {
-    req.log.error({ err }, "Failed to parse uploaded SOP");
     if (err instanceof UploadInputError) {
+      req.log.warn(
+        { err, experimentId: Number(req.params.id) || undefined, fileName: optionalString(requestBody(req.body).file_name), statusCode: err.statusCode, retryExpected: false },
+        "The SOP upload was rejected because the document failed validation; the experiment's existing protocol remains unchanged. Correct the file type, size, or encoding described by the error before retrying.",
+      );
       return res.status(err.statusCode).json({ error: err.message });
     }
     const aiStatus = aiErrorStatus(err);
+    req.log.error(
+      {
+        err,
+        experimentId: Number(req.params.id) || undefined,
+        fileName: optionalString(requestBody(req.body).file_name),
+        statusCode: aiStatus === 500 ? 400 : aiStatus,
+        dependency: aiStatus === 500 ? "document_parser_or_database" : "ai_provider",
+        retryExpected: aiStatus === 429 || aiStatus >= 500,
+      },
+      "The uploaded SOP could not be extracted, converted into a validated protocol, or stored; the previous protocol remains unchanged. Inspect the document parser, AI provider, and experiment record before retrying.",
+    );
     if (aiStatus !== 500) {
       return res.status(aiStatus).json({ error: err instanceof Error ? err.message : "AI request failed." });
     }
@@ -677,6 +755,10 @@ ${relatedContext}`;
     if (streamed.trim()) {
       const auditNotice = numericAuditNotice(streamed, `${systemPrompt}\n${userPrompt}`);
       if (auditNotice) {
+        req.log.warn(
+          { experimentId: id, aiRequestId: stream.requestId, validationFailure: "ungrounded_numeric_claim", responseAnnotated: true, retryExpected: false },
+          "The AI data-analysis report contained numeric claims that could not be traced to supplied experiment data; the report was preserved but annotated for human verification. Review the marked claims before using the report and investigate model quality if this recurs.",
+        );
         const warning = `\n\n> **Numeric verification notice:** ${auditNotice}`;
         streamed += warning;
         res.write(`data: ${JSON.stringify({ content: warning, warning: auditNotice })}\n\n`);
@@ -694,7 +776,11 @@ ${relatedContext}`;
     }
     return res.end();
   } catch (err) {
-    req.log.error({ err }, "Failed to generate data analysis report");
+    const statusCode = aiErrorStatus(err);
+    req.log.error(
+      { err, experimentId: Number(req.params.id) || undefined, statusCode, dependency: "database_or_ai_provider", retryExpected: statusCode === 429 || statusCode >= 500 },
+      "The experiment data-analysis request could not produce and store a complete report; the stream was closed with a safe client error and any previous report remains available. Inspect provider health and the experiment database record before retrying.",
+    );
     writeAiStreamError(res);
     return;
   }
@@ -787,10 +873,20 @@ Scientist's question: ${question}`;
 
     let { answer, chart } = response.data;
     if (chart?.type === "dose_response" && !doseResponseConfigIsGrounded(`${exp.notes ?? ""}\n${question}`, chart)) {
+      req.log.warn(
+        { experimentId: id, aiRequestId: response.requestId, discardedChartType: chart.type, fallback: "answer_without_chart", retryExpected: false },
+        "The AI proposed a dose-response chart without enough user-supplied configuration, so the unsafe chart was discarded while the text answer continues normally. Ask the user for orientation, series index, top concentration, and dilution factor before charting.",
+      );
       chart = null;
     }
     const auditNotice = numericAuditNotice(answer, `${systemInstruction}\n${userPrompt}`);
-    if (auditNotice) answer += `\n\n> **Numeric verification notice:** ${auditNotice}`;
+    if (auditNotice) {
+      req.log.warn(
+        { experimentId: id, aiRequestId: response.requestId, validationFailure: "ungrounded_numeric_claim", responseAnnotated: true, retryExpected: false },
+        "The focused AI answer contained numeric claims that could not be traced to supplied experiment data; the answer was preserved but annotated for human verification. Review the marked claims before use and investigate model quality if this recurs.",
+      );
+      answer += `\n\n> **Numeric verification notice:** ${auditNotice}`;
+    }
 
     await db.insert(messages).values({
       conversationId: convId,
@@ -801,7 +897,11 @@ Scientist's question: ${question}`;
 
     return res.json({ answer, chart, conversation_id: convId, request_id: response.requestId });
   } catch (err) {
-    req.log.error({ err }, "Failed to answer quantify question");
+    const statusCode = aiErrorStatus(err);
+    req.log.error(
+      { err, experimentId: Number(req.params.id) || undefined, statusCode, dependency: "database_or_ai_provider", retryExpected: statusCode === 429 || statusCode >= 500 },
+      "The focused quantification question could not produce a validated answer, so no assistant message or chart was stored. Inspect the AI provider and experiment data records, then retry according to the status code.",
+    );
     return res.status(aiErrorStatus(err)).json({ error: "Failed to answer quantify question" });
   }
 });
@@ -848,7 +948,10 @@ router.post("/templates", async (req, res) => {
     }).returning();
     return res.status(201).json(row[0]);
   } catch (err) {
-    req.log.error({ err }, "Failed to create template");
+    req.log.error(
+      { err, database: "primary", statusCode: 400, retryExpected: true },
+      "The experiment template could not be validated or stored, so no template was created. Check the submitted template fields and database constraints before retrying.",
+    );
     return res.status(400).json({ error: "Failed to create template" });
   }
 });
@@ -1108,9 +1211,18 @@ router.post("/experiments/:id/analyze", aiRateLimiter, aiDailyQuota, async (req,
     const cs = (req.body && typeof req.body === "object")
       ? (req.body as Record<string, unknown>).control_summary as Record<string, unknown> | undefined
       : undefined;
-    const normalizedControls = normalizeControlSummary(cs) ?? normalizeControlSummary(
-      exp.control_summary_json ? (() => { try { return JSON.parse(exp.control_summary_json); } catch { return null; } })() : null,
-    );
+    let storedControls: unknown = null;
+    if (exp.control_summary_json) {
+      try {
+        storedControls = JSON.parse(exp.control_summary_json);
+      } catch (err) {
+        req.log.warn(
+          { err, experimentId: id, database: "primary", field: "control_summary_json", fallback: "analyze_without_stored_controls", retryExpected: false },
+          "Stored experiment control metadata is malformed, so analysis will continue without those saved controls unless the request supplies replacements; results may be less grounded. Repair or resubmit the experiment's control layout before relying on the analysis.",
+        );
+      }
+    }
+    const normalizedControls = normalizeControlSummary(cs) ?? normalizeControlSummary(storedControls);
     const effectiveControlJson = normalizedControls ? JSON.stringify(normalizedControls) : exp.control_summary_json;
     if (normalizedControls && cs) {
       await db.update(experiments)
@@ -1182,7 +1294,13 @@ Respond in this exact JSON format:
     }, ExperimentAnalysisSchema);
     const parsed = response.data;
     const auditNotice = numericAuditNotice(parsed.summary, `${systemPrompt}\n${userPrompt}`);
-    if (auditNotice) parsed.summary += `\n\n> **Numeric verification notice:** ${auditNotice}`;
+    if (auditNotice) {
+      req.log.warn(
+        { experimentId: id, aiRequestId: response.requestId, validationFailure: "ungrounded_numeric_claim", responseAnnotated: true, retryExpected: false },
+        "The AI experiment analysis contained numeric claims that could not be traced to supplied data; the analysis was preserved but annotated for human verification. Review the marked claims before acting on recommendations and investigate model quality if this recurs.",
+      );
+      parsed.summary += `\n\n> **Numeric verification notice:** ${auditNotice}`;
+    }
 
     // Create a conversation for this experiment if it doesn't have one
     let convId = exp.conversation_id;
@@ -1224,7 +1342,11 @@ Respond in this exact JSON format:
       request_id: response.requestId,
     });
   } catch (err) {
-    req.log.error({ err }, "Failed to analyze experiment");
+    const statusCode = aiErrorStatus(err);
+    req.log.error(
+      { err, experimentId: Number(req.params.id) || undefined, statusCode, dependency: "database_or_ai_provider", retryExpected: statusCode === 429 || statusCode >= 500 },
+      "Experiment analysis failed before a validated summary and recommendations could be stored, so any previous analysis remains unchanged. Inspect the AI provider and experiment database records, then retry according to the status code.",
+    );
     return res.status(aiErrorStatus(err)).json({ error: "Failed to analyze experiment" });
   }
 });
@@ -1294,6 +1416,17 @@ router.post("/experiments/compare", aiRateLimiter, aiDailyQuota, async (req, res
     if (streamed.trim()) {
       const auditNotice = numericAuditNotice(streamed, `${comparisonSystemPrompt}\n${userPrompt}`);
       if (auditNotice) {
+        req.log.warn(
+          {
+            experimentAId: Number((req.body as { experiment_a_id?: unknown } | undefined)?.experiment_a_id) || undefined,
+            experimentBId: Number((req.body as { experiment_b_id?: unknown } | undefined)?.experiment_b_id) || undefined,
+            aiRequestId: stream.requestId,
+            validationFailure: "ungrounded_numeric_claim",
+            responseAnnotated: true,
+            retryExpected: false,
+          },
+          "The AI experiment comparison contained numeric claims that could not be traced to the supplied experiments; the streamed comparison was annotated for human verification. Review the marked claims before using the comparison and investigate model quality if this recurs.",
+        );
         const warning = `\n\n> **Numeric verification notice:** ${auditNotice}`;
         res.write(`data: ${JSON.stringify({ content: warning, warning: auditNotice })}\n\n`);
       }
@@ -1303,7 +1436,18 @@ router.post("/experiments/compare", aiRateLimiter, aiDailyQuota, async (req, res
     }
     return res.end();
   } catch (err) {
-    req.log.error({ err }, "Failed to compare experiments");
+    const statusCode = aiErrorStatus(err);
+    req.log.error(
+      {
+        err,
+        experimentAId: Number((req.body as { experiment_a_id?: unknown } | undefined)?.experiment_a_id) || undefined,
+        experimentBId: Number((req.body as { experiment_b_id?: unknown } | undefined)?.experiment_b_id) || undefined,
+        statusCode,
+        dependency: "database_or_ai_provider",
+        retryExpected: statusCode === 429 || statusCode >= 500,
+      },
+      "The experiment comparison could not produce a complete AI response, and the stream was closed with a safe client error. Inspect the provider and both experiment records before retrying according to the status code.",
+    );
     writeAiStreamError(res);
     return;
   }
@@ -1323,6 +1467,10 @@ router.post("/experiments/parse-synergy", async (req, res) => {
     const buffer = decodeUpload(file_content_b64, file_name);
     const rows = await readFirstWorksheetRows(buffer);
     if (!rows.length) {
+      req.log.warn(
+        { fileName: file_name, detectedRowCount: 0, statusCode: 422, retryExpected: false },
+        "The uploaded plate spreadsheet was readable but empty, so no measurements were returned. Export a worksheet containing the plate matrix before retrying.",
+      );
       return res.status(422).json({ error: "This spreadsheet is empty. Upload a Gen5 / Synergy H1 plate export with data." });
     }
 
@@ -1331,16 +1479,27 @@ router.post("/experiments/parse-synergy", async (req, res) => {
     // 8×12 grid (wrong export, transposed layout, or a non-plate sheet). Tell the
     // user instead of returning a blank heatmap.
     if (result.stats.well_count === 0) {
+      req.log.warn(
+        { fileName: file_name, detectedWellCount: 0, statusCode: 422, retryExpected: false },
+        "The uploaded spreadsheet was readable but no 96-well plate grid was detected, so no measurements were returned. Export rows A–H and columns 1–12 as a matrix or use the supported delimited-table upload.",
+      );
       return res.status(422).json({
         error: "Couldn't find a 96-well plate grid in this file. Export the plate as a matrix (rows A–H, columns 1–12) from Gen5, or use the CSV/TSV upload for other layouts.",
       });
     }
     return res.json(result);
   } catch (err) {
-    req.log.error({ err }, "Failed to parse Synergy H1 file");
     if (err instanceof UploadInputError) {
+      req.log.warn(
+        { err, fileName: optionalString(requestBody(req.body).file_name), statusCode: err.statusCode, retryExpected: false },
+        "The plate file was rejected because it failed upload validation; no parsed measurements were returned. Correct the file type, size, or encoding described by the error before retrying.",
+      );
       return res.status(err.statusCode).json({ error: err.message });
     }
+    req.log.error(
+      { err, fileName: optionalString(requestBody(req.body).file_name), component: "plate_file_parser", statusCode: 400, retryExpected: false },
+      "The uploaded plate file could not be decoded or parsed into supported measurements, so no result was returned. Verify that the export is a valid CSV, TSV, TXT, or XLSX plate file and inspect the parser error before retrying.",
+    );
     return res.status(400).json({ error: "Could not parse uploaded file. Please upload a valid CSV, TSV, TXT, or XLSX export." });
   }
 });
@@ -1538,7 +1697,13 @@ async function parseFileContent(b64: string, filename: string): Promise<string> 
     const buffer = decodeUpload(b64, filename);
     if (ext === "xlsx") {
       const rows = await readFirstWorksheetRows(buffer);
-      if (!rows.length) return JSON.stringify({ error: "No rows found", filename });
+      if (!rows.length) {
+        logger.warn(
+          { fileName: filename, fileType: ext, detectedRowCount: 0, fallback: "return_parse_error", retryExpected: false },
+          "A spreadsheet upload was decoded but contained no worksheet rows, so the parser returned a nonfatal error result instead of measurements. Verify the exported workbook contains a populated first worksheet before retrying.",
+        );
+        return JSON.stringify({ error: "No rows found", filename });
+      }
       const result = parseSynergyH1Rows(rows, filename);
       return JSON.stringify({ ...result, _type: "plate96" });
     }
@@ -1548,7 +1713,13 @@ async function parseFileContent(b64: string, filename: string): Promise<string> 
     if (lines.length > MAX_TEXT_ROWS + 1) {
       throw new UploadInputError(`Text file has too many rows. Maximum supported row count is ${MAX_TEXT_ROWS}.`, 413);
     }
-    if (lines.length < 2) return JSON.stringify({ error: "File too short", rows: 0 });
+    if (lines.length < 2) {
+      logger.warn(
+        { fileName: filename, fileType: ext, detectedRowCount: Math.max(0, lines.length - 1), fallback: "return_parse_error", retryExpected: false },
+        "A delimited data upload did not contain both a header and a data row, so the parser returned a nonfatal error result instead of measurements. Export a table with headers and at least one populated row before retrying.",
+      );
+      return JSON.stringify({ error: "File too short", rows: 0 });
+    }
 
     const delimiter = ext === "tsv" ? "\t" : ",";
     const headerCells = lines[0].split(delimiter);
@@ -1581,9 +1752,13 @@ async function parseFileContent(b64: string, filename: string): Promise<string> 
 
     if (conditionKey) {
       const groups: Record<string, number[]> = {};
+      let skippedConditionRows = 0;
       for (const row of rows) {
         const cond = clampCellString(row[conditionKey] ?? "Unknown");
-        if (!groups[cond] && Object.keys(groups).length >= MAX_CONDITION_GROUPS) continue;
+        if (!groups[cond] && Object.keys(groups).length >= MAX_CONDITION_GROUPS) {
+          skippedConditionRows += 1;
+          continue;
+        }
         if (!groups[cond]) groups[cond] = [];
         if (signalKey && !isNaN(parseFloat(row[signalKey] ?? ""))) {
           groups[cond].push(parseFloat(row[signalKey]));
@@ -1594,11 +1769,34 @@ async function parseFileContent(b64: string, filename: string): Promise<string> 
         const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
         return { condition: cond, n: vals.length, mean: mean.toFixed(4) };
       });
+      if (skippedConditionRows > 0) {
+        logger.warn(
+          {
+            fileName: filename,
+            conditionGroupLimit: MAX_CONDITION_GROUPS,
+            includedConditionGroups: Object.keys(groups).length,
+            skippedRowCount: skippedConditionRows,
+            fallback: "omit_excess_condition_groups",
+            retryExpected: false,
+          },
+          "The uploaded table exceeded the supported number of condition groups, so rows introducing additional groups were omitted from the summary while the remaining data was retained. Reduce or split the condition set before relying on grouped analysis.",
+        );
+      }
     }
 
     return JSON.stringify(summary);
   } catch (err) {
     if (err instanceof UploadInputError) throw err;
+    logger.warn(
+      {
+        err,
+        fileName: clampCellString(filename),
+        fileType: filename.split(".").pop()?.toLowerCase(),
+        fallback: "return_parse_error",
+        retryExpected: false,
+      },
+      "The uploaded experiment data could not be parsed, so a nonfatal error result was returned and no measurements are available from this file. Verify the export format and inspect the parser error before retrying.",
+    );
     return JSON.stringify({ error: "Failed to parse file", filename: clampCellString(filename) });
   }
 }

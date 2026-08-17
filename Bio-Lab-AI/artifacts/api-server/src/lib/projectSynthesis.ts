@@ -60,7 +60,13 @@ export async function synthesizeProject(
   let summary = response.text.trim();
   if (!summary) return { error: "The AI returned an empty synthesis (it may be rate-limited). Please try again.", status: 502 };
   const auditNotice = numericAuditNotice(summary, `${systemInstruction}\n${userPrompt}`);
-  if (auditNotice) summary += `\n\n> **Numeric verification notice:** ${auditNotice}`;
+  if (auditNotice) {
+    logger.warn(
+      { projectId, userId, aiRequestId: response.requestId, validationFailure: "ungrounded_numeric_claim", responseAnnotated: true, retryExpected: false },
+      "The AI project synthesis contained numeric claims that could not be traced to supplied project context; the summary was preserved but annotated for human verification. Review the marked claims and investigate model quality if this recurs.",
+    );
+    summary += `\n\n> **Numeric verification notice:** ${auditNotice}`;
+  }
 
   await db.update(projects).set({
     ai_summary: summary,
@@ -76,7 +82,19 @@ export async function synthesizeProject(
 // break the data-upload/analysis response it was triggered from.
 export function triggerProjectSynthesis(projectId: number | null, userId: string): void {
   if (!projectId) return;
-  synthesizeProject(projectId, userId).catch((err) => {
-    logger.warn({ err, projectId }, "Auto project synthesis failed");
-  });
+  synthesizeProject(projectId, userId)
+    .then((result) => {
+      if ("error" in result) {
+        logger.warn(
+          { projectId, userId, statusCode: result.status, reason: result.error, retryExpected: result.status >= 500 },
+          "Automatic project synthesis finished without updating the project because its prerequisites or AI output were unavailable; the triggering experiment change still succeeded. Inspect the project state and retry synthesis manually after resolving the reported status.",
+        );
+      }
+    })
+    .catch((err) => {
+      logger.warn(
+        { err, projectId, userId, retryExpected: true },
+        "Automatic project synthesis failed after an experiment changed; the experiment update succeeded, but the project's AI summary may now be stale. Check the AI provider and database, then run project synthesis again.",
+      );
+    });
 }

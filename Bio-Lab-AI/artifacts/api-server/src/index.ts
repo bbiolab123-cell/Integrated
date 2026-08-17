@@ -22,16 +22,28 @@ async function start(): Promise<void> {
 
   app.listen(port, (err) => {
     if (err) {
-      logger.error({ err }, "Error listening on port");
+      logger.error(
+        { err, port, exitCode: 1, retryExpected: false },
+        "The API server could not bind its listening port, so it is not serving traffic. Verify that PORT is permitted and not already in use, then restart the process.",
+      );
       process.exit(1);
     }
 
-    logger.info({ port }, "Server listening");
-    seedIfEmpty().catch((e) => logger.error({ err: e }, "Seed error"));
+    logger.info(
+      { port, environment: process.env.NODE_ENV ?? "development" },
+      "The API server is accepting connections after configuration and database compatibility checks completed; no operator action is required.",
+    );
+    seedIfEmpty().catch((err) => logger.error(
+      { err, database: "primary", retryExpected: true },
+      "The optional initial experiment seed task terminated unexpectedly after the server started; API traffic remains available. Check database connectivity and permissions, then rerun the seed if demo data is required.",
+    ));
   });
 }
 
 start().catch((err) => {
-  logger.fatal({ err }, "Database compatibility migration failed");
+  logger.fatal(
+    { err, database: "primary", exitCode: 1, retryExpected: false },
+    "API startup stopped because the database compatibility schema could not be ensured, so no traffic is being served. Verify DATABASE_URL, connectivity, schema permissions, and the migration error before restarting.",
+  );
   process.exit(1);
 });

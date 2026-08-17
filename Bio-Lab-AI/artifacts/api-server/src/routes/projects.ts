@@ -51,7 +51,10 @@ router.get("/projects", async (req, res) => {
 
     res.json(rows.map((r) => ({ ...r, experiment_count: Number(r.experiment_count) })));
   } catch (err) {
-    req.log.error({ err }, "Failed to list projects");
+    req.log.error(
+      { err, database: "primary", statusCode: 500, retryExpected: true },
+      "Projects could not be listed, so the client received no project collection. Check database connectivity and project aggregate queries, then retry using the request ID for correlation.",
+    );
     res.status(500).json({ error: "Failed to list projects" });
   }
 });
@@ -75,7 +78,10 @@ router.post("/projects", async (req, res) => {
       .returning();
     return res.status(201).json(inserted[0]);
   } catch (err) {
-    req.log.error({ err }, "Failed to create project");
+    req.log.error(
+      { err, database: "primary", statusCode: 400, retryExpected: true },
+      "The project could not be validated or stored, so no project was created. Check the submitted project fields and database constraints before retrying.",
+    );
     return res.status(400).json({ error: "Failed to create project" });
   }
 });
@@ -109,7 +115,10 @@ router.get("/projects/:id", async (req, res) => {
 
     return res.json({ ...rows[0], experiments: exps });
   } catch (err) {
-    req.log.error({ err }, "Failed to get project");
+    req.log.error(
+      { err, database: "primary", projectId: Number(req.params.id) || undefined, statusCode: 500, retryExpected: true },
+      "The requested project and its experiment list could not be loaded. Check database connectivity and the project record, then retry using the request ID for correlation.",
+    );
     return res.status(500).json({ error: "Failed to get project" });
   }
 });
@@ -141,7 +150,10 @@ router.get("/projects/:id/tasks", async (req, res) => {
       .orderBy(desc(tasks.created_at));
     return res.json(rows);
   } catch (err) {
-    req.log.error({ err }, "Failed to list project tasks");
+    req.log.error(
+      { err, database: "primary", projectId: Number(req.params.id) || undefined, statusCode: 500, retryExpected: true },
+      "Tasks for the requested project could not be loaded, so the client received no task collection. Check database connectivity and project-to-experiment links before retrying.",
+    );
     return res.status(500).json({ error: "Failed to list project tasks" });
   }
 });
@@ -246,7 +258,11 @@ ${PROTOCOL_JSON_FORMAT}`;
 
     return res.json({ ...protocol, ai_request_id: requestId });
   } catch (err) {
-    req.log.error({ err }, "Failed to generate project protocol");
+    const statusCode = aiErrorStatus(err);
+    req.log.error(
+      { err, projectId: Number(req.params.id) || undefined, statusCode, dependency: "database_or_ai_provider", retryExpected: statusCode === 429 || statusCode >= 500 },
+      "Project protocol generation failed before a validated plan could be stored, so the previous project plan remains unchanged. Inspect the AI provider, project records, and attached-document access before retrying.",
+    );
     return res.status(aiErrorStatus(err)).json({ error: "Failed to generate project protocol" });
   }
 });
@@ -273,7 +289,10 @@ router.put("/projects/:id", async (req, res) => {
     }
     return res.json(updated[0]);
   } catch (err) {
-    req.log.error({ err }, "Failed to update project");
+    req.log.error(
+      { err, database: "primary", projectId: Number(req.params.id) || undefined, statusCode: 400, retryExpected: true },
+      "The requested project update could not be stored, so the existing project remains unchanged. Check the submitted fields and database constraints before retrying.",
+    );
     return res.status(400).json({ error: "Failed to update project" });
   }
 });
@@ -314,7 +333,17 @@ router.put("/experiments/:id/project", async (req, res) => {
     }
     return res.json(updated[0]);
   } catch (err) {
-    req.log.error({ err }, "Failed to assign experiment to project");
+    req.log.error(
+      {
+        err,
+        database: "primary",
+        experimentId: Number(req.params.id) || undefined,
+        targetProjectId: Number((req.body as { project_id?: unknown } | undefined)?.project_id) || undefined,
+        statusCode: 400,
+        retryExpected: true,
+      },
+      "The experiment could not be assigned, moved, or removed from the requested project, so its current project link remains unchanged. Verify ownership and database constraints before retrying.",
+    );
     return res.status(400).json({ error: "Failed to assign experiment to project" });
   }
 });
@@ -349,7 +378,10 @@ router.get("/projects/:id/documents", async (req, res) => {
       .orderBy(desc(projectDocuments.created_at));
     return res.json(docs.map((d) => ({ ...d, chars: Number(d.chars) })));
   } catch (err) {
-    req.log.error({ err }, "Failed to list project documents");
+    req.log.error(
+      { err, database: "primary", projectId: Number(req.params.id) || undefined, statusCode: 500, retryExpected: true },
+      "Documents for the requested project could not be listed, so the client received no document metadata. Check database connectivity and project ownership before retrying.",
+    );
     return res.status(500).json({ error: "Failed to list documents" });
   }
 });
@@ -393,24 +425,58 @@ async function extractDocumentText(fileContentB64: string, fileName: string): Pr
 // and anything not in DOCUMENT_EXTENSIONS. Each entry is capped the same way
 // a direct upload would be (size, binary-content check); a single oversized
 // or unreadable entry is skipped rather than failing the whole zip.
-async function extractZipDocuments(zipBuffer: Buffer): Promise<{ name: string; content: string }[]> {
+type ZipExtractionResult = {
+  documents: { name: string; content: string }[];
+  totalEntries: number;
+  skippedDirectories: number;
+  skippedHiddenEntries: number;
+  skippedUnsupportedEntries: number;
+  skippedUnreadableEntries: number;
+  skippedSizeEntries: number;
+  reachedEntryLimit: boolean;
+};
+
+async function extractZipDocuments(zipBuffer: Buffer): Promise<ZipExtractionResult> {
   const zip = new AdmZip(zipBuffer);
   const results: { name: string; content: string }[] = [];
-  for (const entry of zip.getEntries()) {
-    if (results.length >= MAX_ZIP_ENTRIES) break;
-    if (entry.isDirectory) continue;
+  const entries = zip.getEntries();
+  let skippedDirectories = 0;
+  let skippedHiddenEntries = 0;
+  let skippedUnsupportedEntries = 0;
+  let skippedUnreadableEntries = 0;
+  let skippedSizeEntries = 0;
+  let reachedEntryLimit = false;
+  for (const entry of entries) {
+    if (results.length >= MAX_ZIP_ENTRIES) {
+      reachedEntryLimit = true;
+      break;
+    }
+    if (entry.isDirectory) {
+      skippedDirectories += 1;
+      continue;
+    }
     const entryName = entry.entryName.replace(/\\/g, "/");
-    if (ZIP_ENTRY_SKIP_RE.test(entryName)) continue;
+    if (ZIP_ENTRY_SKIP_RE.test(entryName)) {
+      skippedHiddenEntries += 1;
+      continue;
+    }
     const ext = entryName.split(".").pop()?.toLowerCase() ?? "";
-    if (!DOCUMENT_EXTENSIONS.includes(ext)) continue;
+    if (!DOCUMENT_EXTENSIONS.includes(ext)) {
+      skippedUnsupportedEntries += 1;
+      continue;
+    }
 
     let buffer: Buffer;
     try {
       buffer = entry.getData();
     } catch {
+      skippedUnreadableEntries += 1;
       continue;
     }
-    if (!buffer.byteLength || buffer.byteLength > MAX_UPLOAD_BYTES) continue;
+    if (!buffer.byteLength || buffer.byteLength > MAX_UPLOAD_BYTES) {
+      skippedSizeEntries += 1;
+      continue;
+    }
 
     try {
       const content = await extractTextFromBuffer(buffer, ext);
@@ -418,9 +484,19 @@ async function extractZipDocuments(zipBuffer: Buffer): Promise<{ name: string; c
     } catch {
       // Unreadable single entry (corrupt docx/pdf, binary masquerading as
       // text) — skip it, don't fail the whole zip over one bad file.
+      skippedUnreadableEntries += 1;
     }
   }
-  return results;
+  return {
+    documents: results,
+    totalEntries: entries.length,
+    skippedDirectories,
+    skippedHiddenEntries,
+    skippedUnsupportedEntries,
+    skippedUnreadableEntries,
+    skippedSizeEntries,
+    reachedEntryLimit,
+  };
 }
 
 router.post("/projects/:id/documents", async (req, res) => {
@@ -446,6 +522,10 @@ router.post("/projects/:id/documents", async (req, res) => {
         });
       } catch (err) {
         if (err instanceof UploadInputError) {
+          req.log.warn(
+            { err, projectId, fileName: file_name, archiveType: "zip", statusCode: err.statusCode, retryExpected: false },
+            "The project archive upload was rejected because the ZIP failed validation; no documents were imported. Correct the file type, size, or encoding described by the error before retrying.",
+          );
           return res.status(err.statusCode).json({ error: err.message });
         }
         throw err;
@@ -453,9 +533,52 @@ router.post("/projects/:id/documents", async (req, res) => {
       if (!(await userOwnsProject(projectId, userId))) {
         return res.status(404).json({ error: "Project not found" });
       }
-      const extracted = await extractZipDocuments(zipBuffer);
+      const extraction = await extractZipDocuments(zipBuffer);
+      const extracted = extraction.documents;
+      const skippedExpected = extraction.skippedDirectories + extraction.skippedHiddenEntries + extraction.skippedUnsupportedEntries;
+      if (skippedExpected > 0) {
+        req.log.info(
+          {
+            projectId,
+            fileName: file_name,
+            totalArchiveEntries: extraction.totalEntries,
+            importedDocumentCount: extracted.length,
+            skippedDirectories: extraction.skippedDirectories,
+            skippedHiddenEntries: extraction.skippedHiddenEntries,
+            skippedUnsupportedEntries: extraction.skippedUnsupportedEntries,
+          },
+          "Project archive import intentionally ignored directory, hidden, or unsupported entries while continuing with supported documents; this is normal filtering and no action is required unless an expected file is missing.",
+        );
+      }
+      if (extraction.skippedUnreadableEntries > 0 || extraction.skippedSizeEntries > 0 || extraction.reachedEntryLimit) {
+        req.log.warn(
+          {
+            projectId,
+            fileName: file_name,
+            totalArchiveEntries: extraction.totalEntries,
+            importedDocumentCount: extracted.length,
+            skippedUnreadableEntries: extraction.skippedUnreadableEntries,
+            skippedSizeEntries: extraction.skippedSizeEntries,
+            reachedEntryLimit: extraction.reachedEntryLimit,
+            maxImportedDocuments: MAX_ZIP_ENTRIES,
+            retryExpected: false,
+          },
+          "Project archive import continued but omitted unreadable, empty, oversized, or over-limit entries; imported documents are usable, but project context is incomplete. Inspect and repackage the skipped files before relying on the imported context.",
+        );
+      }
       if (!extracted.length) {
+        req.log.warn(
+          { projectId, fileName: file_name, totalArchiveEntries: extraction.totalEntries, statusCode: 422, retryExpected: false },
+          "The project ZIP contained no readable supported documents, so nothing was imported. Add non-empty text, DOCX, or PDF files within size limits and retry.",
+        );
         return res.status(422).json({ error: "Couldn't find any readable text/docx/pdf files inside this zip." });
+      }
+      const truncatedDocumentCount = extracted.filter((document) => document.content.length > MAX_DOC_CHARS).length;
+      if (truncatedDocumentCount > 0) {
+        req.log.warn(
+          { projectId, fileName: file_name, truncatedDocumentCount, maxDocumentCharacters: MAX_DOC_CHARS, retryExpected: false },
+          "Some documents from the project ZIP exceeded the per-document character limit and were truncated before storage; import succeeded, but downstream AI context is incomplete. Split oversized documents and upload them separately if the omitted content is required.",
+        );
       }
       const rows = extracted.map((d) => ({
         user_id: userId,
@@ -480,11 +603,19 @@ router.post("/projects/:id/documents", async (req, res) => {
         resolvedContent = await extractDocumentText(file_content_b64, file_name);
       } catch (err) {
         if (err instanceof UploadInputError) {
+          req.log.warn(
+            { err, projectId, fileName: file_name, statusCode: err.statusCode, retryExpected: false },
+            "The project document upload was rejected because the file failed validation; no document was stored. Correct the file type, size, or encoding described by the error before retrying.",
+          );
           return res.status(err.statusCode).json({ error: err.message });
         }
         throw err;
       }
       if (!resolvedContent.trim()) {
+        req.log.warn(
+          { projectId, fileName: file_name, statusCode: 422, retryExpected: false },
+          "The project document was readable but contained no extractable text, so nothing was stored. Upload a non-empty text-based document rather than a scanned image.",
+        );
         return res.status(422).json({ error: "Couldn't read any text from this document. Make sure it isn't empty or a scanned image." });
       }
     } else if (typeof content === "string" && content.trim()) {
@@ -505,7 +636,19 @@ router.post("/projects/:id/documents", async (req, res) => {
       .returning({ id: projectDocuments.id, name: projectDocuments.name, created_at: projectDocuments.created_at });
     return res.status(201).json(inserted[0]);
   } catch (err) {
-    req.log.error({ err }, "Failed to add project document");
+    req.log.error(
+      {
+        err,
+        projectId: Number(req.params.id) || undefined,
+        fileName: typeof (req.body as { file_name?: unknown } | undefined)?.file_name === "string"
+          ? (req.body as { file_name: string }).file_name
+          : undefined,
+        dependency: "database_or_document_parser",
+        statusCode: 400,
+        retryExpected: true,
+      },
+      "The project document upload could not be extracted or stored, so no complete document result was returned. Verify the document format and inspect parser or database errors before retrying.",
+    );
     return res.status(400).json({ error: "Failed to add project document" });
   }
 });
@@ -524,7 +667,10 @@ router.get("/project-documents/:docId", async (req, res) => {
     }
     return res.json(rows[0]);
   } catch (err) {
-    req.log.error({ err }, "Failed to get project document");
+    req.log.error(
+      { err, database: "primary", documentId: Number(req.params.docId) || undefined, statusCode: 500, retryExpected: true },
+      "The requested project document could not be loaded. Check database connectivity and the document record before retrying using the request ID for correlation.",
+    );
     return res.status(500).json({ error: "Failed to get document" });
   }
 });
@@ -542,6 +688,10 @@ router.delete("/project-documents/:docId", async (req, res) => {
     }
     return res.status(204).send();
   } catch (err) {
+    req.log.error(
+      { err, database: "primary", documentId: Number(req.params.docId) || undefined, statusCode: 500, retryExpected: true },
+      "The requested project document could not be deleted, so it may still be present. Inspect database connectivity and constraints before retrying.",
+    );
     return res.status(500).json({ error: "Failed to delete document" });
   }
 });
@@ -587,7 +737,10 @@ router.get("/projects/:id/export.zip", async (req, res) => {
 
     const archive = archiver("zip", { zlib: { level: 9 } });
     archive.on("error", (err: Error) => {
-      req.log.error({ err }, "Failed to build project export zip");
+      req.log.error(
+        { err, projectId, archiveType: "zip", responseStarted: res.headersSent, retryExpected: true },
+        "The project ZIP archive failed while it was being streamed, so the downloaded file is incomplete or unavailable. Check archive resources and project data, then retry the export; discard any partial client file.",
+      );
       if (!res.headersSent) res.status(500);
       res.end();
     });
@@ -632,7 +785,10 @@ router.get("/projects/:id/export.zip", async (req, res) => {
     await archive.finalize();
     return;
   } catch (err) {
-    req.log.error({ err }, "Failed to export project");
+    req.log.error(
+      { err, projectId: Number(req.params.id) || undefined, archiveType: "zip", responseStarted: res.headersSent, statusCode: 500, retryExpected: true },
+      "The project export could not be assembled or started, so no trustworthy ZIP archive was produced. Inspect database access and archive generation, then retry; discard any partial client file.",
+    );
     if (!res.headersSent) res.status(500).json({ error: "Failed to export project" });
     return;
   }
@@ -652,7 +808,10 @@ router.delete("/projects/:id", async (req, res) => {
     }
     return res.status(204).send();
   } catch (err) {
-    req.log.error({ err }, "Failed to delete project");
+    req.log.error(
+      { err, database: "primary", projectId: Number(req.params.id) || undefined, statusCode: 500, retryExpected: true },
+      "The requested project could not be deleted, so it and its experiment links may remain unchanged. Inspect database connectivity and constraints before retrying.",
+    );
     return res.status(500).json({ error: "Failed to delete project" });
   }
 });

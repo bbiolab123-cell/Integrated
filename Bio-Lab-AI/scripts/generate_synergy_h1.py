@@ -62,4 +62,4 @@ for row_offset, row_label in enumerate(row_labels):
 
 output_path = "test_synergy_h1_export.xlsx"
 wb.save(output_path)
-print(f"File created successfully: {output_path}")
+print(f"Synergy H1 sample workbook created successfully at {output_path}; use this file as parser test input. No operator action is required.")

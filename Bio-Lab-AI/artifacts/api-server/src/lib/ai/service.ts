@@ -64,7 +64,20 @@ function isRetryable(error: unknown): boolean {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function withRetry<T>(operation: () => Promise<T>, attempts = DEFAULT_ATTEMPTS): Promise<T> {
+type AiRetryContext = {
+  requestId: string;
+  taskType: AiTaskType;
+  provider: string;
+  model: string;
+  experimentId?: number;
+  projectId?: number;
+};
+
+async function withRetry<T>(
+  operation: () => Promise<T>,
+  context: AiRetryContext,
+  attempts = DEFAULT_ATTEMPTS,
+): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
@@ -73,7 +86,19 @@ async function withRetry<T>(operation: () => Promise<T>, attempts = DEFAULT_ATTE
       lastError = error;
       if (!isRetryable(error) || attempt === attempts - 1) throw error;
       const delay = 500 * 2 ** attempt + Math.floor(Math.random() * 250);
-      logger.warn({ attempt: attempt + 1, delay }, "AI provider transient error — retrying");
+      logger.warn(
+        {
+          err: error,
+          ...context,
+          attempt: attempt + 1,
+          maxAttempts: attempts,
+          nextAttempt: attempt + 2,
+          delayMs: delay,
+          providerStatusCode: error instanceof AiProviderError ? error.statusCode : undefined,
+          retryExpected: true,
+        },
+        "The AI provider request failed with a transient condition; no result has been returned yet, and an automatic retry is scheduled. If all attempts fail, inspect provider availability, rate limits, and network connectivity using the AI request ID.",
+      );
       await sleep(delay);
     }
   }
@@ -86,7 +111,20 @@ async function recordGeneration(
   messages: AiMessage[],
   output: string,
 ): Promise<void> {
-  if (process.env.AI_RECORD_GENERATIONS === "false") return;
+  if (process.env.AI_RECORD_GENERATIONS === "false") {
+    logger.info(
+      {
+        requestId,
+        taskType: context.taskType,
+        userId: context.userId,
+        experimentId: context.experimentId,
+        projectId: context.projectId,
+        recordingEnabled: false,
+      },
+      "AI generation metadata was intentionally not stored because recording is disabled; the AI result itself remains valid. No action is needed unless feedback or training exports are expected for this deployment.",
+    );
+    return;
+  }
   try {
     await db.insert(aiTrainingExamples).values({
       request_id: requestId,
@@ -102,7 +140,19 @@ async function recordGeneration(
     // A deployment may serve traffic briefly before the Drizzle schema push.
     // AI generation should still work; the missing training record is logged
     // without ever logging prompt or response bodies.
-    logger.warn({ error, requestId, taskType: context.taskType }, "Could not record AI generation metadata");
+    logger.warn(
+      {
+        err: error,
+        requestId,
+        taskType: context.taskType,
+        userId: context.userId,
+        experimentId: context.experimentId,
+        projectId: context.projectId,
+        database: "primary",
+        retryExpected: false,
+      },
+      "The AI result was returned, but its metadata could not be stored for feedback or training; user-facing generation is not affected. Check database connectivity and the ai_training_examples schema, then decide whether the missing record requires manual recovery.",
+    );
   }
 }
 
@@ -120,7 +170,18 @@ export async function generateAiText(request: AiTextRequest): Promise<AiTextResu
   const provider = getAiProvider();
   const requestId = randomUUID();
   const messages = buildMessages(request);
-  const result = await withRetry(() => provider.generate(providerRequest(request, requestId, messages)));
+  const retryContext = {
+    requestId,
+    taskType: request.taskType,
+    provider: provider.name,
+    model: provider.model,
+    experimentId: request.experimentId,
+    projectId: request.projectId,
+  };
+  const result = await withRetry(
+    () => provider.generate(providerRequest(request, requestId, messages)),
+    retryContext,
+  );
   await recordGeneration(request, requestId, messages, result.text);
   return { text: result.text, requestId, model: result.model };
 }
@@ -129,14 +190,32 @@ export async function streamAiText(request: AiTextRequest): Promise<RecordedAiSt
   const provider = getAiProvider();
   const requestId = randomUUID();
   const messages = buildMessages(request);
-  const source = await withRetry(() => provider.stream(providerRequest(request, requestId, messages)));
+  const retryContext = {
+    requestId,
+    taskType: request.taskType,
+    provider: provider.name,
+    model: provider.model,
+    experimentId: request.experimentId,
+    projectId: request.projectId,
+  };
+  const source = await withRetry(
+    () => provider.stream(providerRequest(request, requestId, messages)),
+    retryContext,
+  );
   const recorded = async function* () {
     let output = "";
     for await (const chunk of source) {
       output += chunk.text;
       yield chunk;
     }
-    if (output.trim()) await recordGeneration(request, requestId, messages, output);
+    if (output.trim()) {
+      await recordGeneration(request, requestId, messages, output);
+    } else {
+      logger.warn(
+        { ...retryContext, retryExpected: true },
+        "The AI provider stream closed without usable content, so no assistant result or training record can be produced. The caller will surface a retryable response; inspect provider streaming health if this repeats.",
+      );
+    }
   };
   return Object.assign(recorded(), {
     requestId,
@@ -144,17 +223,31 @@ export async function streamAiText(request: AiTextRequest): Promise<RecordedAiSt
   });
 }
 
-function extractJson(text: string): unknown {
+function extractJson(text: string, context: AiRetryContext): unknown {
   const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   try {
     return JSON.parse(trimmed);
   } catch {
     const firstObject = trimmed.indexOf("{");
     const lastObject = trimmed.lastIndexOf("}");
-    if (firstObject >= 0 && lastObject > firstObject) return JSON.parse(trimmed.slice(firstObject, lastObject + 1));
+    if (firstObject >= 0 && lastObject > firstObject) {
+      const parsed = JSON.parse(trimmed.slice(firstObject, lastObject + 1));
+      logger.info(
+        { ...context, recovery: "extract_json_object" },
+        "The AI response included wrapper text around a valid JSON object; automatic extraction succeeded and processing continues normally. No action is needed unless this recovery becomes frequent.",
+      );
+      return parsed;
+    }
     const firstArray = trimmed.indexOf("[");
     const lastArray = trimmed.lastIndexOf("]");
-    if (firstArray >= 0 && lastArray > firstArray) return JSON.parse(trimmed.slice(firstArray, lastArray + 1));
+    if (firstArray >= 0 && lastArray > firstArray) {
+      const parsed = JSON.parse(trimmed.slice(firstArray, lastArray + 1));
+      logger.info(
+        { ...context, recovery: "extract_json_array" },
+        "The AI response included wrapper text around a valid JSON array; automatic extraction succeeded and processing continues normally. No action is needed unless this recovery becomes frequent.",
+      );
+      return parsed;
+    }
     throw new AiValidationError("The AI returned malformed JSON.");
   }
 }
@@ -163,6 +256,14 @@ export async function generateAiJson<T>(request: AiTextRequest, schema: ZodType<
   const provider = getAiProvider();
   const requestId = randomUUID();
   const messages = buildMessages(request);
+  const retryContext = {
+    requestId,
+    taskType: request.taskType,
+    provider: provider.name,
+    model: provider.model,
+    experimentId: request.experimentId,
+    projectId: request.projectId,
+  };
   let lastText = "";
   let validationMessage = "";
 
@@ -177,17 +278,37 @@ export async function generateAiJson<T>(request: AiTextRequest, schema: ZodType<
             content: `The previous response was invalid (${validationMessage}). Return a corrected JSON object only.`,
           },
         ];
-    const result = await withRetry(() => provider.generate(providerRequest(request, requestId, attemptMessages, true)));
+    const result = await withRetry(
+      () => provider.generate(providerRequest(request, requestId, attemptMessages, true)),
+      retryContext,
+    );
     lastText = result.text;
+    let validationFailure = "schema_mismatch";
+    let validationIssueCount: number | undefined;
     try {
-      const parsed = schema.safeParse(extractJson(lastText));
+      const parsed = schema.safeParse(extractJson(lastText, retryContext));
       if (parsed.success) {
         await recordGeneration(request, requestId, messages, JSON.stringify(parsed.data));
         return { text: JSON.stringify(parsed.data), data: parsed.data, requestId, model: result.model };
       }
+      validationIssueCount = parsed.error.issues.length;
       validationMessage = parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ");
     } catch (error) {
+      validationFailure = "malformed_json";
       validationMessage = error instanceof Error ? error.message : "malformed JSON";
+    }
+    if (validationAttempt === 0) {
+      logger.warn(
+        {
+          ...retryContext,
+          validationAttempt: validationAttempt + 1,
+          maxValidationAttempts: 2,
+          validationFailure,
+          validationIssueCount,
+          retryExpected: true,
+        },
+        "The AI provider returned structured output that could not be validated; no invalid data was stored, and one automatic correction attempt will run. If the correction also fails, inspect model compatibility with the requested schema using the AI request ID.",
+      );
     }
   }
   throw new AiValidationError(`The AI could not produce valid structured output: ${validationMessage}`);

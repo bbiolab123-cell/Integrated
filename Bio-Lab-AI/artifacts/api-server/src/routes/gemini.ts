@@ -165,7 +165,10 @@ router.get(["/ai/conversations", "/gemini/conversations"], async (req, res) => {
 
     res.json(rows.map((c) => ({ ...c, experimentId: convToExpMap[c.id] ?? null })));
   } catch (err) {
-    req.log.error({ err }, "Failed to list AI conversations");
+    req.log.error(
+      { err, database: "primary", experimentId: Number(req.query.experiment_id) || undefined, statusCode: 500, retryExpected: true },
+      "AI conversations could not be listed, so the client received no conversation data. Check the request query and database connectivity, then retry using the request ID for correlation.",
+    );
     res.status(500).json({ error: "Failed to list conversations" });
   }
 });
@@ -208,7 +211,24 @@ router.post(["/ai/conversations", "/gemini/conversations"], async (req, res) => 
 
     res.status(201).json({ ...conv, experimentId: expRows[0]?.id ?? body.experimentId ?? null });
   } catch (err) {
-    req.log.error({ err }, "Failed to create AI conversation");
+    const fields = {
+      err,
+      database: "primary",
+      experimentId: Number((req.body as { experimentId?: unknown } | undefined)?.experimentId) || undefined,
+      statusCode: 400,
+      retryExpected: !(err instanceof z.ZodError),
+    };
+    if (err instanceof z.ZodError) {
+      req.log.warn(
+        { ...fields, validationIssueCount: err.issues.length },
+        "AI conversation creation was rejected because the request body did not match the API contract; this is a client-input problem and no record was created. Correct the submitted title or experiment reference before retrying.",
+      );
+    } else {
+      req.log.error(
+        fields,
+        "An AI conversation could not be created or linked to its experiment; no complete conversation result was returned. Inspect the database error and experiment reference before retrying.",
+      );
+    }
     res.status(400).json({ error: "Failed to create conversation" });
   }
 });
@@ -237,7 +257,10 @@ router.get(["/ai/conversations/:id", "/gemini/conversations/:id"], async (req, r
 
     res.json({ ...rows[0], experimentId: expRows[0]?.id ?? null, messages: msgs });
   } catch (err) {
-    req.log.error({ err }, "Failed to get AI conversation");
+    req.log.error(
+      { err, database: "primary", conversationId: Number(req.params.id) || undefined, statusCode: 500, retryExpected: true },
+      "The requested AI conversation and its messages could not be loaded. Check database connectivity and the conversation record, then retry using the request ID for correlation.",
+    );
     res.status(500).json({ error: "Failed to get conversation" });
   }
 });
@@ -253,7 +276,10 @@ router.delete(["/ai/conversations/:id", "/gemini/conversations/:id"], async (req
     }
     res.status(204).send();
   } catch (err) {
-    req.log.error({ err }, "Failed to delete AI conversation");
+    req.log.error(
+      { err, database: "primary", conversationId: Number(req.params.id) || undefined, statusCode: 500, retryExpected: true },
+      "The requested AI conversation could not be deleted, so it may still be present. Inspect database connectivity and constraints for the conversation before retrying.",
+    );
     res.status(500).json({ error: "Failed to delete conversation" });
   }
 });
@@ -278,7 +304,10 @@ router.get(["/ai/conversations/:id/messages", "/gemini/conversations/:id/message
       .orderBy(messages.createdAt);
     res.json(msgs);
   } catch (err) {
-    req.log.error({ err }, "Failed to list AI messages");
+    req.log.error(
+      { err, database: "primary", conversationId: Number(req.params.id) || undefined, statusCode: 500, retryExpected: true },
+      "Messages for the requested AI conversation could not be loaded. Check database connectivity and the conversation record, then retry using the request ID for correlation.",
+    );
     res.status(500).json({ error: "Failed to list messages" });
   }
 });
@@ -389,6 +418,10 @@ router.post(["/ai/conversations/:id/messages", "/gemini/conversations/:id/messag
         ? numericAuditNotice(fullResponse, `${systemInstruction}\n${chatHistory.map((message) => message.content).join("\n")}`)
         : null;
       if (auditNotice) {
+        req.log.warn(
+          { conversationId: convId, experimentId: exp?.id, aiRequestId: stream.requestId, validationFailure: "ungrounded_numeric_claim", responseAnnotated: true, retryExpected: false },
+          "The AI conversation reply contained numeric claims that could not be traced to supplied experiment context; the reply was preserved but annotated for human verification. Review the marked claims and investigate model quality if this recurs.",
+        );
         const warning = `\n\n> **Numeric verification notice:** ${auditNotice}`;
         fullResponse += warning;
         res.write(`data: ${JSON.stringify({ content: warning, warning: auditNotice })}\n\n`);
@@ -407,7 +440,17 @@ router.post(["/ai/conversations/:id/messages", "/gemini/conversations/:id/messag
     }
     res.end();
   } catch (err) {
-    req.log.error({ err }, "Failed to send AI message");
+    const statusCode = aiErrorStatus(err);
+    req.log.error(
+      {
+        err,
+        conversationId: Number(req.params.id) || undefined,
+        statusCode,
+        dependency: statusCode === 500 ? "database_or_ai_provider" : "ai_provider",
+        retryExpected: statusCode === 429 || statusCode >= 500,
+      },
+      "The conversation message could not produce and persist a complete AI reply; the stream was closed with a safe client error. Inspect the AI provider and conversation storage, then retry according to the status code.",
+    );
     writeAiStreamError(res, aiErrorStatus(err) === 429 ? "The free daily AI limit has been reached." : undefined);
   }
 });
@@ -441,7 +484,10 @@ router.get("/projects/:id/messages", async (req, res) => {
       .orderBy(messages.createdAt);
     res.json(msgs);
   } catch (err) {
-    req.log.error({ err }, "Failed to list project copilot messages");
+    req.log.error(
+      { err, database: "primary", projectId: Number(req.params.id) || undefined, statusCode: 500, retryExpected: true },
+      "Project copilot messages could not be loaded, so the client received no project chat history. Check database connectivity and the project's conversation link before retrying.",
+    );
     res.status(500).json({ error: "Failed to list project messages" });
   }
 });
@@ -532,8 +578,11 @@ router.post("/projects/:id/chat", aiRateLimiter, aiDailyQuota, async (req, res) 
         }
         docsContext = `\n\nPROJECT CONTEXT DOCUMENTS (lab notebook / protocols / notes):\n${parts.join("\n\n")}`;
       }
-    } catch (e) {
-      req.log.warn({ e }, "project documents unavailable — continuing without them");
+    } catch (err) {
+      req.log.warn(
+        { err, database: "primary", projectId, fallback: "chat_without_project_documents", retryExpected: false },
+        "Project documents could not be loaded, so copilot chat is continuing with project and experiment context only; the response may be less grounded, but the request can still succeed. Check the project_documents table and database connectivity before the next request.",
+      );
     }
 
     const documentNames = docsContext.match(/^### (.+)$/gm)?.map((name) => name.slice(4)) ?? [];
@@ -578,6 +627,10 @@ router.post("/projects/:id/chat", aiRateLimiter, aiDailyQuota, async (req, res) 
         `${systemInstruction}\n${chatHistory.map((message) => message.content).join("\n")}`,
       );
       if (auditNotice) {
+        req.log.warn(
+          { projectId, conversationId: convId, aiRequestId: stream.requestId, validationFailure: "ungrounded_numeric_claim", responseAnnotated: true, retryExpected: false },
+          "The project copilot reply contained numeric claims that could not be traced to supplied project context; the reply was preserved but annotated for human verification. Review the marked claims and investigate model quality if this recurs.",
+        );
         const warning = `\n\n> **Numeric verification notice:** ${auditNotice}`;
         fullResponse += warning;
         res.write(`data: ${JSON.stringify({ content: warning, warning: auditNotice })}\n\n`);
@@ -593,7 +646,16 @@ router.post("/projects/:id/chat", aiRateLimiter, aiDailyQuota, async (req, res) 
     }
     res.end();
   } catch (err) {
-    req.log.error({ err }, "Failed to run project chat");
+    req.log.error(
+      {
+        err,
+        projectId: Number(req.params.id) || undefined,
+        statusCode: aiErrorStatus(err),
+        dependency: "database_or_ai_provider",
+        retryExpected: aiErrorStatus(err) === 429 || aiErrorStatus(err) >= 500,
+      },
+      "Project copilot chat could not produce and persist a complete reply; the stream was closed with a safe client error. Inspect the AI provider, project records, and conversation storage before retrying.",
+    );
     writeAiStreamError(res);
   }
 });
@@ -614,7 +676,11 @@ router.post("/projects/:id/synthesize", aiRateLimiter, aiDailyQuota, async (req,
     }
     res.json(result);
   } catch (err) {
-    req.log.error({ err }, "Failed to synthesize project");
+    const statusCode = aiErrorStatus(err);
+    req.log.error(
+      { err, projectId: Number(req.params.id) || undefined, statusCode, dependency: "database_or_ai_provider", retryExpected: statusCode === 429 || statusCode >= 500 },
+      "The project synthesis request failed before a new summary could be stored, so the previous summary remains unchanged. Inspect the AI provider and project database records, then retry according to the status code.",
+    );
     res.status(aiErrorStatus(err)).json({ error: "Failed to synthesize project" });
   }
 });
@@ -671,7 +737,11 @@ router.post(["/ai/general-chat", "/gemini/general-chat"], aiRateLimiter, aiDaily
     }
     res.end();
   } catch (err) {
-    req.log.error({ err }, "Failed to run general chat");
+    const statusCode = aiErrorStatus(err);
+    req.log.error(
+      { err, statusCode, dependency: "ai_provider", retryExpected: statusCode === 429 || statusCode >= 500 },
+      "General AI chat could not produce a complete response, and the stream was closed with a safe client error. Inspect provider availability and rate limits, then retry according to the status code.",
+    );
     writeAiStreamError(res);
   }
 });
@@ -737,7 +807,11 @@ Respond in this exact JSON format:
 
     res.json({ ...response.data, ai_request_id: response.requestId });
   } catch (err) {
-    req.log.error({ err }, "Failed to generate protocol");
+    const statusCode = aiErrorStatus(err);
+    req.log.error(
+      { err, statusCode, dependency: "database_or_ai_provider", retryExpected: statusCode === 429 || statusCode >= 500 },
+      "Standalone protocol generation failed before a validated protocol could be returned; no protocol was stored. Inspect AI provider health and recent-experiment database access, then retry according to the status code.",
+    );
     res.status(aiErrorStatus(err)).json({ error: "Failed to generate protocol" });
   }
 });

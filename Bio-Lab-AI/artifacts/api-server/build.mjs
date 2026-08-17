@@ -120,6 +120,9 @@ globalThis.__dirname = __bannerPath.dirname(globalThis.__filename);
 }
 
 buildAll().catch((err) => {
-  console.error(err);
+  console.error(
+    "The API server build did not complete, so the dist bundle is unavailable. Inspect the attached esbuild error and source path, correct the build or dependency issue, then rerun the build.",
+    { component: "api-server-build", outputDirectory: "dist", error: err },
+  );
   process.exit(1);
 });

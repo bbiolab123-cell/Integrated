@@ -12,6 +12,7 @@ const DEMO_USER_ID = "demo_user";
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (isDemoMode) {
     (req as Request & { userId: string }).userId = DEMO_USER_ID;
+    req.log = req.log.child({ userId: DEMO_USER_ID });
     next();
     return;
   }
@@ -23,5 +24,6 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     return;
   }
   (req as Request & { userId: string }).userId = userId as string;
+  req.log = req.log.child({ userId });
   next();
 }

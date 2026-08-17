@@ -7,7 +7,11 @@ type SessionClaims = Record<string, unknown>;
 function getAuthSafe(req: Request) {
   try {
     return getAuth(req);
-  } catch {
+  } catch (err) {
+    req.log?.warn(
+      { err, authProvider: "clerk", retryExpected: false },
+      "The request authentication context could not be read, so no authenticated user can be resolved from Clerk. The request will be denied unless a trusted local user context exists; verify Clerk middleware configuration and request credentials.",
+    );
     return null;
   }
 }

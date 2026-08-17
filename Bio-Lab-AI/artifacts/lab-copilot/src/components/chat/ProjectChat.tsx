@@ -83,13 +83,19 @@ export function ProjectChat({ projectId }: { projectId: number }) {
               if (data.error) setChatError(data.error);
               if (data.done) queryClient.invalidateQueries({ queryKey });
             } catch (err) {
-              console.error("Parse error", err);
+              console.error(
+                "A project copilot stream event could not be parsed, so the visible reply may be incomplete. Retry the message and inspect the API stream format if the problem repeats.",
+                { component: "project-copilot", projectId, endpoint: `/api/projects/${projectId}/chat`, error: err },
+              );
             }
           }
         }
       }
     } catch (err) {
-      console.error("Project chat error:", err);
+      console.error(
+        "The project copilot request did not complete, so no reliable assistant reply is available. Check browser connectivity and the correlated API request, then retry the message.",
+        { component: "project-copilot", projectId, endpoint: `/api/projects/${projectId}/chat`, retryExpected: true, error: err },
+      );
       setChatError(err instanceof Error ? err.message : "Couldn't reach the AI. Check your connection and try again.");
     } finally {
       setIsStreaming(false);
