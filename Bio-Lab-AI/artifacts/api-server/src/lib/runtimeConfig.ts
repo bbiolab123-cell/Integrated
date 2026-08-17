@@ -1,3 +1,5 @@
+import { assertSafeAiProviderConfiguration } from "@workspace/integrations-ai";
+
 export const isProduction = process.env.NODE_ENV === "production";
 export const isClerkConfigured = Boolean(process.env.CLERK_SECRET_KEY?.trim());
 
@@ -17,4 +19,9 @@ export function assertSafeAuthConfiguration(): void {
       ? "CLERK_SECRET_KEY is required when NODE_ENV=production"
       : "Authentication is not configured. Set CLERK_SECRET_KEY, or explicitly set ENABLE_DEMO_MODE=true for local-only demo use.",
   );
+}
+
+export function assertSafeAiConfiguration(): void {
+  if (!isProduction) return;
+  assertSafeAiProviderConfiguration(process.env);
 }

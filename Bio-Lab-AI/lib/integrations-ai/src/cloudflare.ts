@@ -10,6 +10,15 @@ import {
 
 const DEFAULT_MODEL = "@cf/mistral/mistral-7b-instruct-v0.2-lora";
 const DEFAULT_TIMEOUT_MS = 90_000;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
+
+export type CloudflareAiDeploymentInfo = {
+  provider: "cloudflare";
+  model: string;
+  adapterEnabled: boolean;
+  adapterReleaseStatus: "base" | "accepted";
+  productionSmokeStatus: "not_applicable" | "pending" | "passed";
+};
 
 type CloudflareEnvelope = {
   success?: boolean;
@@ -21,6 +30,95 @@ function required(name: string, value: string | undefined): string {
   const normalized = value?.trim();
   if (!normalized) throw new AiProviderError(`${name} is required to use Cloudflare Workers AI.`, 503, false);
   return normalized;
+}
+
+function releaseSha(name: string, value: string | undefined): string {
+  const normalized = required(name, value);
+  if (!SHA256_PATTERN.test(normalized)) {
+    throw new AiProviderError(`${name} must be a 64-character SHA-256 digest.`, 503, false);
+  }
+  return normalized.toLowerCase();
+}
+
+function rolloutPercentage(env: NodeJS.ProcessEnv): number {
+  const raw = env.AI_ROLLOUT_PERCENT?.trim() || "0";
+  if (!/^\d+$/.test(raw)) {
+    throw new AiProviderError("AI_ROLLOUT_PERCENT must be an integer from 0 through 100.", 503, false);
+  }
+  const value = Number(raw);
+  if (value < 0 || value > 100) {
+    throw new AiProviderError("AI_ROLLOUT_PERCENT must be an integer from 0 through 100.", 503, false);
+  }
+  return value;
+}
+
+/**
+ * Validate the complete server-side Workers AI configuration without making a
+ * network call. A LoRA can only be selected when an accepted release report is
+ * attested with immutable hashes. Public rollout additionally requires the
+ * owner-only production contract smoke test to have passed.
+ */
+export function readCloudflareAiDeploymentInfo(
+  env: NodeJS.ProcessEnv = process.env,
+): CloudflareAiDeploymentInfo {
+  required("CLOUDFLARE_ACCOUNT_ID", env.CLOUDFLARE_ACCOUNT_ID);
+  required("CLOUDFLARE_API_TOKEN", env.CLOUDFLARE_API_TOKEN);
+  const model = env.CLOUDFLARE_MODEL?.trim() || DEFAULT_MODEL;
+  const loraId = env.CLOUDFLARE_LORA_ID?.trim();
+  const releaseStatus = env.AI_LORA_RELEASE_STATUS?.trim().toLowerCase() || "base";
+
+  if (!loraId) {
+    if (releaseStatus !== "base") {
+      throw new AiProviderError(
+        "AI_LORA_RELEASE_STATUS must be base while CLOUDFLARE_LORA_ID is empty.",
+        503,
+        false,
+      );
+    }
+    rolloutPercentage(env);
+    return {
+      provider: "cloudflare",
+      model,
+      adapterEnabled: false,
+      adapterReleaseStatus: "base",
+      productionSmokeStatus: "not_applicable",
+    };
+  }
+
+  if (releaseStatus !== "accepted") {
+    throw new AiProviderError(
+      "CLOUDFLARE_LORA_ID is blocked until AI_LORA_RELEASE_STATUS=accepted and every release gate has passed.",
+      503,
+      false,
+    );
+  }
+  releaseSha("AI_LORA_DATASET_SHA256", env.AI_LORA_DATASET_SHA256);
+  releaseSha("AI_LORA_ADAPTER_SHA256", env.AI_LORA_ADAPTER_SHA256);
+  releaseSha("AI_LORA_RELEASE_REPORT_SHA256", env.AI_LORA_RELEASE_REPORT_SHA256);
+
+  const smokeStatus = env.AI_LORA_PRODUCTION_SMOKE_STATUS?.trim().toLowerCase() || "pending";
+  if (smokeStatus !== "pending" && smokeStatus !== "passed") {
+    throw new AiProviderError(
+      "AI_LORA_PRODUCTION_SMOKE_STATUS must be pending or passed when a LoRA is configured.",
+      503,
+      false,
+    );
+  }
+  if (rolloutPercentage(env) > 0 && smokeStatus !== "passed") {
+    throw new AiProviderError(
+      "A LoRA public rollout is blocked until AI_LORA_PRODUCTION_SMOKE_STATUS=passed.",
+      503,
+      false,
+    );
+  }
+
+  return {
+    provider: "cloudflare",
+    model,
+    adapterEnabled: true,
+    adapterReleaseStatus: "accepted",
+    productionSmokeStatus: smokeStatus,
+  };
 }
 
 function normalizeMessages(messages: AiMessage[]): AiMessage[] {
@@ -63,9 +161,10 @@ export class CloudflareAiProvider implements AiProvider {
   private readonly timeoutMs: number;
 
   constructor(env: NodeJS.ProcessEnv = process.env) {
+    const deployment = readCloudflareAiDeploymentInfo(env);
     this.accountId = required("CLOUDFLARE_ACCOUNT_ID", env.CLOUDFLARE_ACCOUNT_ID);
     this.apiToken = required("CLOUDFLARE_API_TOKEN", env.CLOUDFLARE_API_TOKEN);
-    this.model = env.CLOUDFLARE_MODEL?.trim() || DEFAULT_MODEL;
+    this.model = deployment.model;
     this.loraId = env.CLOUDFLARE_LORA_ID?.trim() || undefined;
     const parsedTimeout = Number(env.AI_PROVIDER_TIMEOUT_MS);
     this.timeoutMs = Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : DEFAULT_TIMEOUT_MS;

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
+import { logger } from "../lib/logger";
 import { getRequestUserId } from "../lib/requestUser";
 import { readPositiveIntEnv } from "../lib/requestLimits";
 
@@ -91,7 +92,41 @@ export const aiRateLimiter = createRateLimiter({
   message: "Too many AI requests. Please wait a bit before asking the copilot again.",
 });
 
-let dailyAiUsage = { day: "", count: 0 };
+export type AiDailyQuotaResult = {
+  allowed: boolean;
+  used: number;
+};
+
+export type AiDailyQuotaStore = {
+  consume(day: string, limit: number): Promise<AiDailyQuotaResult>;
+};
+
+const postgresAiDailyQuotaStore: AiDailyQuotaStore = {
+  async consume(day, limit) {
+    // Keep the database module lazy so pure unit tests can exercise quota and
+    // rollout behavior without needing a live DATABASE_URL.
+    const { pool } = await import("@workspace/db");
+    const result = await pool.query<{ request_count: number }>(`
+      INSERT INTO ai_daily_usage (usage_day, request_count, updated_at)
+      VALUES ($1::date, 1, now())
+      ON CONFLICT (usage_day) DO UPDATE
+        SET request_count = ai_daily_usage.request_count + 1,
+            updated_at = now()
+        WHERE ai_daily_usage.request_count < $2
+      RETURNING request_count
+    `, [day, limit]);
+    if (result.rowCount && result.rows[0]) {
+      return { allowed: true, used: Number(result.rows[0].request_count) };
+    }
+    return { allowed: false, used: limit };
+  },
+};
+
+let aiDailyQuotaStore: AiDailyQuotaStore = postgresAiDailyQuotaStore;
+
+export function setAiDailyQuotaStoreForTests(store: AiDailyQuotaStore | null): void {
+  aiDailyQuotaStore = store ?? postgresAiDailyQuotaStore;
+}
 
 function aiRolloutEnabled(req: Request): boolean {
   const userId = getRequestUserId(req);
@@ -111,12 +146,11 @@ function aiRolloutEnabled(req: Request): boolean {
 }
 
 /**
- * Conservative request cap protecting the free Workers AI allowance. This is
- * intentionally global: a public deployment must stop before one busy account
- * can create provider charges for everyone. Railway currently runs one API
- * instance; move this counter to Postgres before horizontally scaling.
+ * Conservative global request cap protecting the free Workers AI allowance.
+ * Consumption is atomic in Postgres, so server restarts and horizontal scaling
+ * cannot reset or race the counter.
  */
-export function aiDailyQuota(req: Request, res: Response, next: NextFunction) {
+export async function aiDailyQuota(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (!aiRolloutEnabled(req)) {
     res.status(503).json({
       error: "Bio-Lab AI is not enabled for this account during the current rollout stage.",
@@ -125,9 +159,20 @@ export function aiDailyQuota(req: Request, res: Response, next: NextFunction) {
     return;
   }
   const day = new Date().toISOString().slice(0, 10);
-  if (dailyAiUsage.day !== day) dailyAiUsage = { day, count: 0 };
   const limit = readPositiveIntEnv("AI_DAILY_REQUEST_LIMIT", 50);
-  if (dailyAiUsage.count >= limit) {
+  let quota: AiDailyQuotaResult;
+  try {
+    quota = await aiDailyQuotaStore.consume(day, limit);
+  } catch (error) {
+    logger.error({ err: error, day }, "Could not enforce the AI daily quota");
+    res.status(503).json({
+      error: "Bio-Lab AI is temporarily unavailable because its usage limit could not be verified.",
+      code: "AI_QUOTA_UNAVAILABLE",
+    });
+    return;
+  }
+
+  if (!quota.allowed) {
     const resetAt = new Date(`${day}T00:00:00.000Z`);
     resetAt.setUTCDate(resetAt.getUTCDate() + 1);
     const retryAfter = Math.max(1, Math.ceil((resetAt.getTime() - Date.now()) / 1000));
@@ -140,8 +185,7 @@ export function aiDailyQuota(req: Request, res: Response, next: NextFunction) {
     });
     return;
   }
-  dailyAiUsage.count += 1;
   res.setHeader("AI-Daily-Limit", String(limit));
-  res.setHeader("AI-Daily-Remaining", String(Math.max(0, limit - dailyAiUsage.count)));
+  res.setHeader("AI-Daily-Remaining", String(Math.max(0, limit - quota.used)));
   next();
 }

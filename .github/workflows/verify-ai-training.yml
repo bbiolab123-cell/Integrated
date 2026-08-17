@@ -12,6 +12,7 @@ on:
       - 'Bio-Lab-AI/package.json'
       - 'Bio-Lab-AI/pnpm-lock.yaml'
       - 'Bio-Lab-AI/pnpm-workspace.yaml'
+      - 'render.yaml'
       - '.github/workflows/verify-ai-training.yml'
   pull_request:
     paths:
@@ -23,6 +24,7 @@ on:
       - 'Bio-Lab-AI/package.json'
       - 'Bio-Lab-AI/pnpm-lock.yaml'
       - 'Bio-Lab-AI/pnpm-workspace.yaml'
+      - 'render.yaml'
       - '.github/workflows/verify-ai-training.yml'
 
 permissions:
