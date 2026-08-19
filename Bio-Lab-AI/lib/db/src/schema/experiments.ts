@@ -29,6 +29,9 @@ export const experiments = pgTable("experiments", {
   // (a derived aggregate) — persisted so the layout survives across devices
   // instead of living only in browser localStorage.
   plate_layout_json: text("plate_layout_json"),
+  // Unguessable token for a read-only public link. NULL = not shared. Revoking
+  // clears it, which permanently invalidates any link already handed out.
+  share_token: text("share_token"),
   ai_summary: text("ai_summary"),
   ai_summary_request_id: text("ai_summary_request_id"),
   ai_next_experiments_json: text("ai_next_experiments_json"),

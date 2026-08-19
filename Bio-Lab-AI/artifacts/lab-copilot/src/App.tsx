@@ -21,6 +21,7 @@ const ExperimentList = lazy(() => import("@/pages/ExperimentList").then((module)
 const ExperimentDetail = lazy(() => import("@/pages/ExperimentDetail").then((module) => ({ default: module.ExperimentDetail })));
 const ExperimentForm = lazy(() => import("@/pages/ExperimentForm").then((module) => ({ default: module.ExperimentForm })));
 const ExperimentEdit = lazy(() => import("@/pages/ExperimentEdit").then((module) => ({ default: module.ExperimentEdit })));
+const SharedExperiment = lazy(() => import("@/pages/SharedExperiment").then((module) => ({ default: module.SharedExperiment })));
 const ExperimentCompare = lazy(() => import("@/pages/ExperimentCompare").then((module) => ({ default: module.ExperimentCompare })));
 const DataAnalysisPage = lazy(() => import("@/pages/DataAnalysisPage").then((module) => ({ default: module.DataAnalysisPage })));
 const AdminPage = lazy(() => import("@/pages/AdminPage").then((module) => ({ default: module.AdminPage })));
@@ -160,6 +161,7 @@ function AppRoutes({ isAdmin }: { isAdmin: boolean }) {
       <ShortcutHelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
       <Suspense fallback={<RouteLoading />}><Switch>
         <Route path="/" component={() => <Redirect to="/dashboard" />} />
+        <Route path="/shared/:token"><SharedExperiment /></Route>
         <Route path="/landing"><LandingPage /></Route>
         <Route path="/dashboard">
           <Layout><AnimatedRoute><Dashboard /></AnimatedRoute></Layout>
@@ -347,6 +349,7 @@ function ClerkAppRoutes() {
       <ShortcutHelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
       <Suspense fallback={<RouteLoading />}><Switch>
         <Route path="/" component={HomeRedirect} />
+        <Route path="/shared/:token"><SharedExperiment /></Route>
         <Route path="/sign-in/*?" component={SignInPage} />
         <Route path="/sign-up/*?" component={SignUpPage} />
         <Route path="/dashboard">

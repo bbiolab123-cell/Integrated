@@ -1,13 +1,20 @@
 import { pool } from "@workspace/db";
 
 /**
- * Compatibility migration for deployments that predate the provider-neutral
- * AI and training-feedback tables. The current hosting setup starts the
- * bundled API directly, so there is no separate migration command to run.
+ * Additive schema reconciliation, run at startup.
+ *
+ * Named for the AI training tables it originally covered, it is now the place
+ * every additive column belongs. The hosting setup starts the bundled API
+ * directly with no separate migration step, so a column added here reaches
+ * production on deploy — whereas a column added only to the Drizzle schema
+ * needs someone to remember a hand-written SQL statement. Forgetting that took
+ * the API down once already: Drizzle selects every column it knows about, so a
+ * column missing from the database fails *every* experiment query, not just
+ * the feature that introduced it.
  *
  * Every statement is additive and idempotent. This lets old production
  * databases upgrade safely while fresh databases still use the Drizzle schema
- * as their source of truth.
+ * as their source of truth. Destructive changes do NOT belong here.
  */
 export async function ensureAiTrainingSchema(): Promise<void> {
   const client = await pool.connect();
@@ -18,7 +25,15 @@ export async function ensureAiTrainingSchema(): Promise<void> {
         ADD COLUMN IF NOT EXISTS control_summary_json text,
         ADD COLUMN IF NOT EXISTS ai_summary_request_id text,
         ADD COLUMN IF NOT EXISTS data_analysis_request_id text,
-        ADD COLUMN IF NOT EXISTS protocol_ai_request_id text
+        ADD COLUMN IF NOT EXISTS protocol_ai_request_id text,
+        ADD COLUMN IF NOT EXISTS plate_layout_json text,
+        ADD COLUMN IF NOT EXISTS share_token text
+    `);
+    // A shared experiment is found by this token alone, so it has to be unique.
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS experiments_share_token_idx
+        ON experiments (share_token)
+        WHERE share_token IS NOT NULL
     `);
     await client.query(`
       ALTER TABLE projects

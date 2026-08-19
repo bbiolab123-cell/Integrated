@@ -17,7 +17,7 @@ import { format, parseISO } from "date-fns";
 import {
   BrainCircuit, FlaskConical, FileText,
   CheckCircle2, AlertTriangle, Pencil, MessageSquare, CheckSquare, FileDown,
-  Download, Image, Loader2, Activity, Waves,
+  Download, Image, Loader2, Activity, Waves, Share2, Link2Off,
 } from "lucide-react";
 import { toPng } from "html-to-image";
 import { CopilotChat } from "@/components/chat/CopilotChat";
@@ -71,6 +71,10 @@ export function ExperimentDetail() {
   const [layoutEdit, setLayoutEdit] = useState(false);
   const [normalizeView, setNormalizeView] = useState(false);
   const skipLayoutPersistRef = useRef(true);
+  // Read-only share link. The token comes back from the server; the URL is
+  // assembled here so the link always points at wherever the app is served.
+  const [shareToken, setShareToken] = useState<string | null>(null);
+  const [shareBusy, setShareBusy] = useState(false);
 
   const { data: experiment, isLoading } = useGetExperiment(expId, {
     query: { enabled: !!expId, queryKey: getGetExperimentQueryKey(expId) }
@@ -200,6 +204,50 @@ export function ExperimentDetail() {
     }, 800);
     return () => clearTimeout(timer);
   }, [expId, wellRoles]);
+
+  // Reflect the stored token whenever the experiment loads or refetches.
+  useEffect(() => {
+    const token = (experiment as { share_token?: string | null } | undefined)?.share_token ?? null;
+    setShareToken(token);
+  }, [experiment]);
+
+  const shareUrl = shareToken ? `${window.location.origin}/shared/${shareToken}` : null;
+
+  const toggleShare = async () => {
+    if (shareBusy || !expId) return;
+    setShareBusy(true);
+    try {
+      if (shareToken) {
+        const res = await apiFetch(`/api/experiments/${expId}/share`, { method: "DELETE" });
+        if (!res.ok) throw new Error("revoke failed");
+        setShareToken(null);
+        toast({ title: "Sharing turned off", description: "The previous link no longer opens this experiment." });
+        return;
+      }
+
+      const res = await apiFetch(`/api/experiments/${expId}/share`, { method: "POST" });
+      if (!res.ok) throw new Error("share failed");
+      const { share_token: token } = await res.json();
+      setShareToken(token);
+
+      const url = `${window.location.origin}/shared/${token}`;
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(url);
+        copied = true;
+      } catch { /* clipboard blocked (http, or permission denied) — show the URL instead */ }
+      toast({
+        title: copied ? "Link copied" : "Share link ready",
+        description: copied
+          ? "Anyone with the link can view this experiment read-only."
+          : url,
+      });
+    } catch {
+      toast({ title: "Couldn't update sharing", description: "Please try again.", variant: "destructive" });
+    } finally {
+      setShareBusy(false);
+    }
+  };
 
   const assignWell = (well: string) =>
     setWellRoles((prev) => {
@@ -427,6 +475,16 @@ export function ExperimentDetail() {
           >
             <FileDown className="h-4 w-4" />
             Export PDF
+          </MotionButton>
+          <MotionButton
+            variant="outline"
+            className="gap-2"
+            onClick={toggleShare}
+            disabled={shareBusy}
+            whileTap={{ scale: 0.97 }}
+          >
+            {shareToken ? <Link2Off className="h-4 w-4" /> : <Share2 className="h-4 w-4" />}
+            {shareToken ? "Unshare" : "Share link"}
           </MotionButton>
           <MotionButton
             onClick={() => analyzeMutation.mutate({ id: expId, data: analyzeData as never })}

@@ -36,6 +36,7 @@ import {
 } from "../lib/plateParser";
 import ExcelJS from "exceljs";
 import mammoth from "mammoth";
+import { randomBytes } from "node:crypto";
 
 const router: IRouter = Router();
 const MAX_WORKBOOK_ROWS = 512;
@@ -304,6 +305,51 @@ router.put("/experiments/:id", async (req, res) => {
   } catch (err) {
     req.log.error({ err }, "Failed to update experiment");
     return res.status(400).json({ error: "Failed to update experiment" });
+  }
+});
+
+// Share links: create/rotate and revoke. The token is the whole capability, so
+// it is generated from a CSPRNG and never derived from the experiment id —
+// a guessable token would expose the lab's data to anyone who can count.
+router.post("/experiments/:id/share", async (req, res) => {
+  try {
+    const userId = getRequestUserId(req);
+    const id = parseInt(String(req.params.id), 10);
+    const token = randomBytes(32).toString("hex");
+
+    const updated = await db.update(experiments)
+      .set({ share_token: token, updated_at: new Date() })
+      .where(and(eq(experiments.id, id), eq(experiments.user_id, userId)))
+      .returning({ share_token: experiments.share_token });
+
+    if (!updated[0]) {
+      return res.status(404).json({ error: "Experiment not found" });
+    }
+    return res.json({ share_token: updated[0].share_token });
+  } catch (err) {
+    req.log.error({ err }, "Failed to create share link");
+    return res.status(500).json({ error: "Failed to create share link" });
+  }
+});
+
+router.delete("/experiments/:id/share", async (req, res) => {
+  try {
+    const userId = getRequestUserId(req);
+    const id = parseInt(String(req.params.id), 10);
+
+    const updated = await db.update(experiments)
+      .set({ share_token: null, updated_at: new Date() })
+      .where(and(eq(experiments.id, id), eq(experiments.user_id, userId)))
+      .returning({ id: experiments.id });
+
+    if (!updated[0]) {
+      return res.status(404).json({ error: "Experiment not found" });
+    }
+    // Clearing the token immediately breaks every link already handed out.
+    return res.json({ share_token: null });
+  } catch (err) {
+    req.log.error({ err }, "Failed to revoke share link");
+    return res.status(500).json({ error: "Failed to revoke share link" });
   }
 });
 
