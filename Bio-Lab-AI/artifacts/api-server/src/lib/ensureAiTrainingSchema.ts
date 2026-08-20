@@ -77,6 +77,23 @@ export async function ensureAiTrainingSchema(): Promise<void> {
         ALTER COLUMN schema_version SET DEFAULT 2
     `);
     await client.query(`
+      CREATE TABLE IF NOT EXISTS error_events (
+        id serial PRIMARY KEY,
+        occurred_at timestamp with time zone NOT NULL DEFAULT now(),
+        method text NOT NULL,
+        route text NOT NULL,
+        status integer NOT NULL,
+        message text,
+        stack text,
+        user_id text,
+        request_id text
+      )
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS error_events_occurred_idx
+        ON error_events (occurred_at DESC)
+    `);
+    await client.query(`
       CREATE TABLE IF NOT EXISTS ai_daily_usage (
         usage_day date PRIMARY KEY,
         request_count integer NOT NULL DEFAULT 0,

@@ -2,9 +2,10 @@ import express, { type ErrorRequestHandler, type Express } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import pinoHttp from "pino-http";
-import { clerkMiddleware } from "@clerk/express";
+import { clerkMiddleware, getAuth } from "@clerk/express";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import { recordErrorEvent } from "./lib/errorEvents";
 import { apiRateLimiter } from "./middlewares/rateLimit";
 import {
   assertSafeAiConfiguration,
@@ -117,6 +118,28 @@ app.use("/api", (_req, res, next) => {
 });
 app.use("/api", apiRateLimiter);
 
+// Record every 5xx, however it was produced. Most route handlers catch their
+// own errors and return res.status(500) directly rather than throwing, so an
+// error-handling middleware alone would see almost none of them. Hooking
+// response completion catches both shapes.
+app.use("/api", (req, res, next) => {
+  res.on("finish", () => {
+    if (res.statusCode < 500) return;
+    void recordErrorEvent({
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      // A thrown error attaches its message below; this path covers handled
+      // failures, where the status and route are what there is to know.
+      message: res.locals.errorMessage ?? null,
+      stack: res.locals.errorStack ?? null,
+      userId: getAuth(req)?.userId ?? null,
+      requestId: req.id ? String(req.id) : null,
+    });
+  });
+  next();
+});
+
 // Only mount Clerk middleware when auth is configured.
 // Without CLERK_SECRET_KEY the app runs in demo mode (see requireAuth.ts).
 if (isClerkConfigured) {
@@ -138,6 +161,11 @@ const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
       : 500;
   const safeStatus = status >= 400 && status < 600 ? status : 500;
   req.log.error({ err, statusCode: safeStatus }, "Unhandled API error");
+  // Hand the detail to the finish hook above, which does the actual write.
+  if (err instanceof Error) {
+    res.locals.errorMessage = err.message;
+    res.locals.errorStack = err.stack;
+  }
   res.status(safeStatus).json({
     error: safeStatus === 413
       ? "Request body is too large"

@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { desc, sql } from "drizzle-orm";
-import { db, experiments } from "@workspace/db";
+import { db, experiments, pool } from "@workspace/db";
 import { requireAdmin } from "../middlewares/requireAdmin";
 
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
@@ -19,6 +19,41 @@ router.get("/admin/me", async (req, res) => {
   const email = normalizeEmail((req as typeof req & { adminEmail?: string }).adminEmail || "");
   const approved = APPROVED_ADMIN_EMAILS.has(email);
   res.json({ email, approved });
+});
+
+// Recent server failures, newest first. This is the only way to find out that
+// something is broken in production without a user reporting it.
+router.get("/admin/errors", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, occurred_at, method, route, status, message, stack, user_id, request_id
+       FROM error_events
+       ORDER BY occurred_at DESC
+       LIMIT 100`,
+    );
+    // Group identical failures so one broken route does not read as 100
+    // separate incidents.
+    const summary = new Map<string, { route: string; method: string; status: number; count: number; last_seen: string }>();
+    for (const row of result.rows) {
+      const key = `${row.method} ${row.route} ${row.status}`;
+      const existing = summary.get(key);
+      if (existing) existing.count += 1;
+      else summary.set(key, {
+        route: row.route,
+        method: row.method,
+        status: row.status,
+        count: 1,
+        last_seen: row.occurred_at,
+      });
+    }
+    res.json({
+      events: result.rows,
+      summary: Array.from(summary.values()).sort((a, b) => b.count - a.count),
+    });
+  } catch (err) {
+    req.log.error({ err }, "Failed to read error events");
+    res.status(500).json({ error: "Failed to read error events" });
+  }
 });
 
 router.get("/admin/stats", async (_req, res) => {

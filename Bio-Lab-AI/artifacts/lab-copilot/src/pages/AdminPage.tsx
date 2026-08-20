@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AlertTriangle, Shield, Users, Database, Ban, Flag, ClipboardList, Activity, Plus, Trash2, BrainCircuit, Download } from "lucide-react";
 import { useAppUser } from "@/contexts/UserContext";
-import { LabConversation, LabMetric, LabPageHeader } from "@/components/lab/LivingLab";
+import { LabConversation, LabMetric, LabPageHeader, LabPanel, LabSectionHeader } from "@/components/lab/LivingLab";
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
 
 async function fetchJson(path: string, init?: RequestInit) {
@@ -51,6 +51,14 @@ export function AdminPage() {
     queryKey: ["ai-training-status", effectiveEmail],
     enabled: approvedEmail,
     queryFn: () => fetchJson("/api/ai/training/status", { headers: { "x-user-email": effectiveEmail } }),
+  });
+  // Recent server failures. Without this, a production bug is only visible if a
+  // scientist bothers to report it.
+  const errors = useQuery({
+    queryKey: ["admin-errors", effectiveEmail],
+    enabled: approvedEmail,
+    refetchInterval: 60_000,
+    queryFn: () => fetchJson("/api/admin/errors", { headers: { "x-user-email": effectiveEmail } }),
   });
 
   const downloadTrainingData = async () => {
@@ -153,6 +161,42 @@ export function AdminPage() {
         <LabMetric label="Pending" value={moderation.pending_reviews} detail="Reviews awaiting action" icon={ClipboardList} accent="amber" index={4} />
         <LabMetric label="Priority alerts" value={moderation.high_priority_alerts} detail="Requires attention" icon={Ban} accent="rose" index={5} />
       </div>
+
+      <LabSectionHeader
+        eyebrow="Reliability"
+        title="Server errors"
+        description="Failures recorded in the last 14 days, grouped by route. Until this existed, a production bug was only visible if someone reported it."
+      />
+      <LabPanel accent="rose">
+        {errors.isLoading ? (
+          <p className="text-sm text-muted-foreground">Checking…</p>
+        ) : errors.isError ? (
+          <p className="text-sm text-destructive">Couldn't load error events.</p>
+        ) : (errors.data?.summary?.length ?? 0) === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No server errors recorded. This is the good outcome — the panel fills itself only when something breaks.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {errors.data.summary.slice(0, 12).map((row: { route: string; method: string; status: number; count: number; last_seen: string }) => (
+              <div
+                key={`${row.method}-${row.route}-${row.status}`}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border px-3 py-2 font-mono text-xs"
+              >
+                <span className="truncate">
+                  <span className="text-muted-foreground">{row.method}</span> {row.route}
+                </span>
+                <span className="flex items-center gap-3">
+                  <span className="text-destructive">{row.status}</span>
+                  <span className="text-muted-foreground">
+                    ×{row.count} · {new Date(row.last_seen).toLocaleString()}
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </LabPanel>
 
       <Card className="lab-panel rounded-[1.7rem]">
         <CardHeader>
