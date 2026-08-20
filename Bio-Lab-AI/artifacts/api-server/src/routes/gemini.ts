@@ -55,8 +55,18 @@ ${steps}
 You are now in RUN/TROUBLESHOOT mode. The scientist may report progress ("we finished step 2", "step 3 looked off") or ask troubleshooting questions — ground your answers in the actual steps/materials/controls above, and when something looks wrong, distinguish a technical issue (pipetting, timing, reagent) from a real biological finding, citing the specific step.`;
 }
 
-const GENERAL_SYSTEM_PROMPT = `You are an expert biotech and cell biology advisor.
-Answer general scientific questions, explain concepts, help with protocol design, and discuss biotech topics. Be concise and scientific.`;
+const GENERAL_SYSTEM_PROMPT = `You are an expert biotech and cell biology advisor with access to the scientist's own experiment history.
+Answer general scientific questions, explain concepts, help with protocol design, and discuss biotech topics. Be concise and scientific.
+When their logged experiments are relevant, reason from those rather than from generic textbook knowledge, and be explicit about which you are using.`;
+
+// How much of the scientist's history to ground each answer in. Capped on both
+// row count and characters: this runs on every dashboard question, and the
+// provider bills per token.
+const GENERAL_CHAT_HISTORY_LIMIT = 12;
+const GENERAL_CHAT_HISTORY_BUDGET = 24_000;
+// Prior turns accepted from the client, so a follow-up like "why?" still works.
+// Bounded because the client controls this array.
+const GENERAL_CHAT_MAX_TURNS = 8;
 
 const PROJECT_SYSTEM_PROMPT = `You are an expert cell biologist and research strategist acting as the copilot for an entire research PROJECT.
 You are given the project's goal and every experiment logged under it. Reason across the whole project, not one plate:
@@ -621,23 +631,63 @@ router.post("/projects/:id/synthesize", aiRateLimiter, aiDailyQuota, async (req,
 
 router.post(["/ai/general-chat", "/gemini/general-chat"], aiRateLimiter, aiDailyQuota, async (req, res) => {
   try {
-    const { message: rawMessage } = req.body as { message?: string };
+    const { message: rawMessage, history: rawHistory } = req.body as {
+      message?: string;
+      history?: { role?: string; content?: string }[];
+    };
     if (!rawMessage?.trim()) {
       res.status(400).json({ error: "Message is required" });
       return;
     }
     let message: string;
+    let priorTurns: { role: "user" | "assistant"; content: string }[] = [];
     try {
       message = assertMaxChars(rawMessage, "Message");
+      // The client supplies the transcript, so validate it rather than trust
+      // it: known roles only, non-empty, length-capped, and only the most
+      // recent few turns.
+      priorTurns = (Array.isArray(rawHistory) ? rawHistory : [])
+        .filter((turn): turn is { role: "user" | "assistant"; content: string } =>
+          (turn?.role === "user" || turn?.role === "assistant") &&
+          typeof turn.content === "string" &&
+          turn.content.trim().length > 0)
+        .slice(-GENERAL_CHAT_MAX_TURNS)
+        .map((turn) => ({ role: turn.role, content: assertMaxChars(turn.content, "Message") }));
     } catch (err) {
       if (rejectInputError(res, err)) return;
       throw err;
     }
 
     const userId = getRequestUserId(req);
-    // "Ask Anything" is intentionally general. Project/experiment grounding is
-    // available in the scoped copilots and must not be injected implicitly here.
-    const systemInstruction = `${GENERAL_SYSTEM_PROMPT}${CHAT_TONE_INSTRUCTION}`;
+
+    // Ask Anything is the dashboard's "second brain": it answers from the
+    // scientist's own logged work, not just from general biology. It used to
+    // query nothing at all, so "how many of my assays failed?" got a textbook
+    // answer about assays in general.
+    //
+    // Grounding goes through the same builder the scoped copilots use, which
+    // withholds experiment names and redacts them from notes. That means this
+    // can reason over what was run, when, on what instrument, and how it turned
+    // out — but it cannot recall an experiment BY NAME. That restriction is
+    // deliberate (identifiers must not reach the provider or the training
+    // capture) and is not something to quietly relax here.
+    const recent = await db
+      .select()
+      .from(experiments)
+      .where(eq(experiments.user_id, userId))
+      .orderBy(desc(experiments.created_at))
+      .limit(GENERAL_CHAT_HISTORY_LIMIT);
+
+    let historyCtx = "";
+    if (recent.length > 0) {
+      const history = buildLabHistory(recent);
+      const clipped = history.length > GENERAL_CHAT_HISTORY_BUDGET
+        ? `${history.slice(0, GENERAL_CHAT_HISTORY_BUDGET)}\n…(older experiments omitted)`
+        : history;
+      historyCtx = `\n\nTHE SCIENTIST'S OWN RECENT EXPERIMENTS (their real logged work, newest first). Use this whenever the question touches their history, and say plainly when it does not cover what they asked. Experiments are identified only by experiment_ref — you do not have their names, so never guess one:\n${clipped}`;
+    }
+
+    const systemInstruction = `${GENERAL_SYSTEM_PROMPT}${historyCtx}${CHAT_TONE_INSTRUCTION}`;
 
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
@@ -648,7 +698,7 @@ router.post(["/ai/general-chat", "/gemini/general-chat"], aiRateLimiter, aiDaily
       taskType: "general_chat",
       userId,
       systemInstruction,
-      messages: [{ role: "user", content: message }],
+      messages: [...priorTurns, { role: "user", content: message }],
       maxTokens: 2048,
     });
 

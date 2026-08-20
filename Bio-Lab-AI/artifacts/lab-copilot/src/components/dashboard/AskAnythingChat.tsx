@@ -9,10 +9,18 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ImproveAiDialog } from "@/components/ai/ImproveAiDialog";
 
-const SYSTEM_PROMPT = "You are an expert biotech and cell biology advisor. Answer general scientific questions, explain concepts, help with protocol design, and discuss biotech topics. Be concise and scientific.";
+// The system prompt lives on the server. A client-supplied one was being sent
+// here and (correctly) ignored by the API — a caller must not be able to
+// rewrite the model's instructions.
+
+interface Turn {
+  role: "user" | "assistant";
+  content: string;
+}
 
 export function AskAnythingChat() {
   const [message, setMessage] = useState("");
+  const [turns, setTurns] = useState<Turn[]>([]);
   const [response, setResponse] = useState("");
   const [error, setError] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -22,7 +30,14 @@ export function AskAnythingChat() {
     const content = message.trim();
     if (!content || isStreaming) return;
 
+    // Send the transcript so far, then show the question immediately.
+    const priorTurns = response
+      ? [...turns, { role: "assistant" as const, content: response }]
+      : turns;
+
     setIsStreaming(true);
+    setTurns([...priorTurns, { role: "user", content }]);
+    setMessage("");
     setResponse("");
     setError("");
     setRequestId(null);
@@ -31,7 +46,7 @@ export function AskAnythingChat() {
       const res = await apiFetch("/api/ai/general-chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: content, systemPrompt: SYSTEM_PROMPT }),
+        body: JSON.stringify({ message: content, history: priorTurns }),
       });
 
       if (!res.ok) {
@@ -66,7 +81,7 @@ export function AskAnythingChat() {
     }
   };
 
-  const isEmpty = !response && !isStreaming && !error;
+  const isEmpty = !response && !isStreaming && !error && turns.length === 0;
 
   return (
     <Card className="surface-panel rounded-lg border-primary/20">
@@ -80,13 +95,13 @@ export function AskAnythingChat() {
             Rate limited
           </span>
         </div>
-        <p className="text-sm text-muted-foreground">General biotech questions, not experiment specific</p>
+        <p className="text-sm text-muted-foreground">Biotech questions, grounded in your logged experiments</p>
       </CardHeader>
       <CardContent className="space-y-4">
         <Textarea
           value={message}
           onChange={(e) => setMessage(e.target.value)}
-          placeholder="Ask about protocols, biology, or biotech concepts..."
+          placeholder="Ask about your results so far, a protocol, or any biology question…"
           className="min-h-[88px] resize-none"
         />
         <div className="flex justify-end">
@@ -105,6 +120,15 @@ export function AskAnythingChat() {
             </div>
           ) : (
             <>
+              {turns.map((turn, index) => (
+                <div key={index} className={turn.role === "user" ? "mb-3" : "mb-3 prose prose-sm dark:prose-invert max-w-none break-words"}>
+                  {turn.role === "user" ? (
+                    <p className="font-medium text-foreground">{turn.content}</p>
+                  ) : (
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{turn.content}</ReactMarkdown>
+                  )}
+                </div>
+              ))}
               <div className="prose prose-sm dark:prose-invert max-w-none break-words">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
                   {response || ""}
