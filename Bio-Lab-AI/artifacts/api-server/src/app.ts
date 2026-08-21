@@ -124,18 +124,35 @@ app.use("/api", apiRateLimiter);
 // response completion catches both shapes.
 app.use("/api", (req, res, next) => {
   res.on("finish", () => {
-    if (res.statusCode < 500) return;
-    void recordErrorEvent({
-      method: req.method,
-      path: req.path,
-      status: res.statusCode,
-      // A thrown error attaches its message below; this path covers handled
-      // failures, where the status and route are what there is to know.
-      message: res.locals.errorMessage ?? null,
-      stack: res.locals.errorStack ?? null,
-      userId: getAuth(req)?.userId ?? null,
-      requestId: req.id ? String(req.id) : null,
-    });
+    // This runs in an EventEmitter callback, where a throw is an uncaught
+    // exception that takes the process down. Nothing in here may escape —
+    // monitoring must not be able to kill the server it monitors.
+    try {
+      if (res.statusCode < 500) return;
+
+      // getAuth throws outright when Clerk middleware has not run, which is
+      // exactly the case in demo mode. Unguarded, every 5xx would crash.
+      let userId: string | null = null;
+      try {
+        userId = getAuth(req)?.userId ?? null;
+      } catch {
+        userId = null;
+      }
+
+      void recordErrorEvent({
+        method: req.method,
+        path: req.path,
+        status: res.statusCode,
+        // A thrown error attaches its message below; this path covers handled
+        // failures, where the status and route are what there is to know.
+        message: res.locals.errorMessage ?? null,
+        stack: res.locals.errorStack ?? null,
+        userId,
+        requestId: req.id ? String(req.id) : null,
+      });
+    } catch {
+      // Deliberately silent: the request has already failed.
+    }
   });
   next();
 });
