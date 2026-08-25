@@ -10,6 +10,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ImproveAiDialog } from "@/components/ai/ImproveAiDialog";
 import { sanitizeChatMessages } from "@/lib/chatMessages";
+import { readJsonEventStream } from "@/lib/sse";
 
 type CopilotChatProps = {
   conversationId: number;
@@ -78,42 +79,14 @@ export function CopilotChat({ conversationId }: CopilotChatProps) {
         throw new Error(data?.error ?? "Failed to send message");
       }
 
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error("No reader");
-
-      const decoder = new TextDecoder();
-      let buffer = '';
-      
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              if (data.content) {
-                setAssistantBuffer(prev => prev + data.content);
-              }
-              if (data.error) {
-                setChatError(data.error);
-              }
-              if (data.done) {
-                queryClient.invalidateQueries({ queryKey: getListAiMessagesQueryKey(conversationId) });
-              }
-            } catch (err) {
-              console.error(
-                "An AI conversation stream event could not be parsed, so the visible reply may be incomplete. Retry the message and inspect the API stream format if the problem repeats.",
-                { component: "experiment-copilot", conversationId, endpoint: `/api/ai/conversations/${conversationId}/messages`, error: err },
-              );
-            }
-          }
+      if (!response.body) throw new Error("The AI response stream was unavailable.");
+      await readJsonEventStream(response.body, (data) => {
+        if (typeof data.content === "string") setAssistantBuffer((prev) => prev + data.content);
+        if (typeof data.error === "string") setChatError(data.error);
+        if (data.done === true) {
+          void queryClient.invalidateQueries({ queryKey: getListAiMessagesQueryKey(conversationId) });
         }
-      }
+      });
     } catch (error) {
       console.error(
         "The AI conversation request did not complete, so no reliable assistant reply is available. Check browser connectivity and the correlated API request, then retry the message.",

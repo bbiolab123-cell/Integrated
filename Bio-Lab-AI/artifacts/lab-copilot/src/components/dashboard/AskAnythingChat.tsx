@@ -8,6 +8,7 @@ import { motion } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ImproveAiDialog } from "@/components/ai/ImproveAiDialog";
+import { readJsonEventStream } from "@/lib/sse";
 
 const SYSTEM_PROMPT = "You are an expert biotech and cell biology advisor. Answer general scientific questions, explain concepts, help with protocol design, and discuss biotech topics. Be concise and scientific.";
 
@@ -38,27 +39,12 @@ export function AskAnythingChat() {
         const data = await res.json().catch(() => null);
         throw new Error(data?.error ?? "The AI request failed. Please try again.");
       }
-      if (!res.body) throw new Error("No response body");
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const data = JSON.parse(line.slice(6));
-            if (data.content) setResponse((prev) => prev + data.content);
-            if (data.error) setError(data.error);
-            if (data.request_id) setRequestId(data.request_id);
-          }
-        }
-      }
+      if (!res.body) throw new Error("The AI response stream was unavailable.");
+      await readJsonEventStream(res.body, (data) => {
+        if (typeof data.content === "string") setResponse((prev) => prev + data.content);
+        if (typeof data.error === "string") setError(data.error);
+        if (typeof data.request_id === "string") setRequestId(data.request_id);
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "The AI request failed. Please try again.");
     } finally {

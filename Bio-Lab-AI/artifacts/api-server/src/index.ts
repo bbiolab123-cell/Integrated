@@ -3,6 +3,7 @@ import { ensureAiTrainingSchema } from "./lib/ensureAiTrainingSchema";
 import { logger } from "./lib/logger";
 import { seedIfEmpty } from "./lib/seed";
 
+// Demo application attribution: made by Srivanth Dasu.
 const rawPort = process.env["PORT"];
 
 if (!rawPort) {

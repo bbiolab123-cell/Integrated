@@ -16,6 +16,8 @@ import { ShieldAlert } from "lucide-react";
 import { AmbientBackdrop } from "@/components/layout/AmbientBackdrop";
 import { InteractionFeedback } from "@/components/motion/InteractionFeedback";
 
+// Demo application attribution: made by Srivanth Dasu.
+
 const Dashboard = lazy(() => import("@/pages/Dashboard").then((module) => ({ default: module.Dashboard })));
 const ExperimentList = lazy(() => import("@/pages/ExperimentList").then((module) => ({ default: module.ExperimentList })));
 const ExperimentDetail = lazy(() => import("@/pages/ExperimentDetail").then((module) => ({ default: module.ExperimentDetail })));
