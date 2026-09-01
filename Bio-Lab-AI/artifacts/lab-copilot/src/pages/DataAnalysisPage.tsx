@@ -787,7 +787,7 @@ export function DataAnalysisPage() {
             try {
               const data = JSON.parse(line.slice(6));
               if (data.content) setReport((prev) => prev + data.content);
-              if (data.error) setStreamError("The AI analysis could not be generated. Please check your API configuration or try again.");
+              if (data.error) setStreamError("AI narrative analysis is unavailable right now. The plate heatmap, CV%, Z′, and IC50 tools below still work.");
               if (data.done) setHasReport(true);
               if (data.request_id) setReportRequestId(data.request_id);
             } catch {}
@@ -801,11 +801,11 @@ export function DataAnalysisPage() {
       setRefineNote("");
     } catch (err: unknown) {
       if (err instanceof Error && err.name !== "AbortError") {
-        setStreamError("The AI analysis could not be generated. Please check your API configuration or try again.");
+        setStreamError("AI narrative analysis is unavailable right now. The plate heatmap, CV%, Z′, and IC50 tools below still work.");
       }
     } finally {
       setIsStreaming(false);
-      setHasReport(true);
+      setHasReport((current) => current || Boolean(report.trim()));
     }
   };
 

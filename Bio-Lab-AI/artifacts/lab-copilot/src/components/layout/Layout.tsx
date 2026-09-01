@@ -258,6 +258,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <span className="signal-dot h-1.5 w-1.5 rounded-full bg-emerald-400 text-emerald-400" />
           Workspace online
         </div>
+        <Link href="/privacy" className="text-[10px] text-sidebar-foreground/55 transition hover:text-sidebar-primary">Privacy</Link>
         <motion.button
           onClick={toggleTheme}
           className="rounded-lg border border-sidebar-border bg-sidebar-accent/35 p-2 text-sidebar-foreground/55 hover:text-sidebar-foreground"

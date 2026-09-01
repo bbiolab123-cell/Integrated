@@ -478,7 +478,10 @@ export function LandingPage() {
             <Atom className="h-4 w-4 text-cyan-200" />
             <span className="font-semibold">Bioalyzer</span>
           </div>
-          <p>Built for scientists who would rather learn from the last run than lose it.</p>
+          <div className="flex flex-col gap-2 text-right sm:items-end">
+            <p>Built for scientists who would rather learn from the last run than lose it.</p>
+            <Link href="/privacy" className="text-white/55 underline-offset-4 transition hover:text-white hover:underline">Privacy</Link>
+          </div>
         </div>
       </footer>
     </div>

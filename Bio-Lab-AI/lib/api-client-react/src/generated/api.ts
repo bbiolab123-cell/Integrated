@@ -26,6 +26,7 @@ import type {
   AiTrainingStatus,
   AnalyzeExperimentBody,
   ApiError,
+  AttachExperimentDataBody,
   CreateAiConversationBody,
   CreateExperimentBody,
   DashboardStats,
@@ -35,6 +36,9 @@ import type {
   HealthStatus,
   ListAiConversationsParams,
   ListExperimentsParams,
+  ParsePlateImport200,
+  PlateImportBody,
+  PlateImportPreview,
   SendAiMessageBody,
   UpdateExperimentBody,
 } from "./api.schemas";
@@ -719,6 +723,180 @@ export const useGenerateDataAnalysisReport = <
   TContext
 > => {
   return useMutation(getGenerateDataAnalysisReportMutationOptions(options));
+};
+
+/**
+ * @summary Detect or manually select a 96-well plate grid
+ */
+export const getParsePlateImportUrl = () => {
+  return `/api/experiments/parse-plate`;
+};
+
+export const parsePlateImport = async (
+  plateImportBody: PlateImportBody,
+  options?: RequestInit,
+): Promise<ParsePlateImport200> => {
+  return customFetch<ParsePlateImport200>(getParsePlateImportUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(plateImportBody),
+  });
+};
+
+export const getParsePlateImportMutationOptions = <
+  TError = ErrorType<PlateImportPreview>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof parsePlateImport>>,
+    TError,
+    { data: BodyType<PlateImportBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof parsePlateImport>>,
+  TError,
+  { data: BodyType<PlateImportBody> },
+  TContext
+> => {
+  const mutationKey = ["parsePlateImport"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof parsePlateImport>>,
+    { data: BodyType<PlateImportBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return parsePlateImport(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ParsePlateImportMutationResult = NonNullable<
+  Awaited<ReturnType<typeof parsePlateImport>>
+>;
+export type ParsePlateImportMutationBody = BodyType<PlateImportBody>;
+export type ParsePlateImportMutationError = ErrorType<PlateImportPreview>;
+
+/**
+ * @summary Detect or manually select a 96-well plate grid
+ */
+export const useParsePlateImport = <
+  TError = ErrorType<PlateImportPreview>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof parsePlateImport>>,
+    TError,
+    { data: BodyType<PlateImportBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof parsePlateImport>>,
+  TError,
+  { data: BodyType<PlateImportBody> },
+  TContext
+> => {
+  return useMutation(getParsePlateImportMutationOptions(options));
+};
+
+/**
+ * @summary Parse and attach plate-reader data to an experiment
+ */
+export const getAttachExperimentDataUrl = (id: number) => {
+  return `/api/experiments/${id}/data`;
+};
+
+export const attachExperimentData = async (
+  id: number,
+  attachExperimentDataBody: AttachExperimentDataBody,
+  options?: RequestInit,
+): Promise<Experiment> => {
+  return customFetch<Experiment>(getAttachExperimentDataUrl(id), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(attachExperimentDataBody),
+  });
+};
+
+export const getAttachExperimentDataMutationOptions = <
+  TError = ErrorType<ApiError>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof attachExperimentData>>,
+    TError,
+    { id: number; data: BodyType<AttachExperimentDataBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof attachExperimentData>>,
+  TError,
+  { id: number; data: BodyType<AttachExperimentDataBody> },
+  TContext
+> => {
+  const mutationKey = ["attachExperimentData"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof attachExperimentData>>,
+    { id: number; data: BodyType<AttachExperimentDataBody> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return attachExperimentData(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type AttachExperimentDataMutationResult = NonNullable<
+  Awaited<ReturnType<typeof attachExperimentData>>
+>;
+export type AttachExperimentDataMutationBody =
+  BodyType<AttachExperimentDataBody>;
+export type AttachExperimentDataMutationError = ErrorType<ApiError>;
+
+/**
+ * @summary Parse and attach plate-reader data to an experiment
+ */
+export const useAttachExperimentData = <
+  TError = ErrorType<ApiError>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof attachExperimentData>>,
+    TError,
+    { id: number; data: BodyType<AttachExperimentDataBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof attachExperimentData>>,
+  TError,
+  { id: number; data: BodyType<AttachExperimentDataBody> },
+  TContext
+> => {
+  return useMutation(getAttachExperimentDataMutationOptions(options));
 };
 
 /**

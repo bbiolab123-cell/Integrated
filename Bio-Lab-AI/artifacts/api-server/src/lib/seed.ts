@@ -1,95 +1,74 @@
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { and, eq } from "drizzle-orm";
 import { db, experiments } from "@workspace/db";
-import { sql } from "drizzle-orm";
 import { logger } from "./logger";
+import { parseDelimitedRows, parsePlateRows } from "./plateImport";
+import { isDemoMode } from "./runtimeConfig";
 
-const SEED_EXPERIMENTS = [
-  {
-    name: "MTT Viability Assay - Run 1",
-    date: "2026-01-10",
-    assay_type: "Cell Viability",
-    instrument: "SpectraMax M5 Plate Reader",
-    status: "failed",
-    notes: `Conditions: HeLa cells, 10% FBS, 50uM Compound X, 72hr incubation.
-Results: Cell viability 12% vs 85% control. Mass cell death observed.
-Notes: Possible media contamination. pH looked off. Recommend checking media prep and compound stock concentration before next run.`,
-  },
-  {
-    name: "MTT Viability Assay - Run 2",
-    date: "2026-01-18",
-    assay_type: "Cell Viability",
-    instrument: "SpectraMax M5 Plate Reader",
-    status: "success",
-    notes: `Conditions: HeLa cells, 10% FBS, 25uM Compound X, 48hr incubation. Fresh media batch.
-Results: Cell viability 78% vs 85% control.
-Notes: Reduced dose and time improved results significantly. Fresh media resolved contamination concern.`,
-  },
-  {
-    name: "ELISA Cytokine Panel - Batch 1",
-    date: "2026-02-03",
-    assay_type: "ELISA",
-    instrument: "BioTek Synergy H1",
-    status: "failed",
-    notes: `Conditions: IL-6 and TNF-a detection, patient serum samples, standard protocol.
-Results: High background noise, inconsistent duplicates. OD values unreliable across all wells.
-Notes: Suspect antibody degradation. Antibody stored at wrong temperature over weekend. CV exceeded 25% across duplicates.`,
-  },
-  {
-    name: "ELISA Cytokine Panel - Batch 2",
-    date: "2026-02-14",
-    assay_type: "ELISA",
-    instrument: "BioTek Synergy H1",
-    status: "success",
-    notes: `Conditions: IL-6 and TNF-a detection, fresh antibody lot, 4 degree storage confirmed throughout.
-Results: Clean signal, CV below 10% across all duplicates. IL-6 range 12-340 pg/mL, TNF-a range 8-210 pg/mL.
-Notes: New antibody lot resolved the inconsistency issue. Storage protocol updated for all future ELISA reagents.`,
-  },
-  {
-    name: "CRISPR KO Efficiency - TP53",
-    date: "2026-03-01",
-    assay_type: "CRISPR Genome Editing",
-    instrument: "Bio-Rad CFX96 qPCR",
-    status: "in_progress",
-    notes: `Conditions: HEK293T cells, Cas9 + sgRNA targeting TP53 exon 4, lipofection transfection.
-Results: Western blot pending. PCR shows 60% indel frequency by T7E1 assay. Sanger sequencing confirms edits at target locus.
-Notes: Awaiting protein-level confirmation by Western blot. Results look promising so far. Cell viability post-transfection was 85%.`,
-  },
-];
+const DEMO_USER_ID = "demo_user";
+const DEMO_FILE_NAME = "demo-dose-response-plate.csv";
+const DEMO_EXPERIMENT_NAME = "Demo · Compound-X viability plate";
 
-// Seed data is demo-only and owned by a synthetic system user.
-const SEED_USER_ID = "system_seed";
+const DEMO_CONTROL_SUMMARY = {
+  positive_control_wells: ["A1", "A2", "B1", "B2"],
+  negative_control_wells: ["A11", "A12", "B11", "B12"],
+  blank_wells: ["H11", "H12"],
+  sample_wells: [],
+  mean_positive: 0.994,
+  mean_negative: 0.061,
+  zprime: 0.966,
+  signal_to_background: 16.366,
+};
 
+/**
+ * Create one immediately useful experiment for explicit local demo mode.
+ * The same CSV stays in examples/ so the demo never depends on a physical
+ * Synergy H1 or on opaque data generated only inside the database.
+ */
 export async function seedIfEmpty(): Promise<void> {
+  if (!isDemoMode) return;
   try {
-    const count = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(experiments);
-
-    const total = Number(count[0]?.count ?? 0);
-    if (total > 0) {
+    const existing = await db.select({ id: experiments.id })
+      .from(experiments)
+      .where(and(eq(experiments.user_id, DEMO_USER_ID), eq(experiments.file_name, DEMO_FILE_NAME)))
+      .limit(1);
+    if (existing[0]) {
       logger.info(
-        { database: "primary", existingExperimentCount: total, seedSkipped: true },
-        "Initial demo experiment seeding was skipped because the database already contains experiments; this is normal and existing data was left unchanged.",
+        { demoExperimentId: existing[0].id, seedSkipped: true },
+        "The local demo plate already exists, so demo seeding was skipped and the existing record was preserved.",
       );
       return;
     }
 
-    logger.info(
-      { database: "primary", plannedInsertCount: SEED_EXPERIMENTS.length },
-      "No experiments exist, so the optional initial demo dataset is being inserted. No operator action is required unless this is not a demo environment.",
-    );
-
-    for (const exp of SEED_EXPERIMENTS) {
-      await db.insert(experiments).values({ ...exp, user_id: SEED_USER_ID });
+    const samplePath = resolve(process.cwd(), "examples", DEMO_FILE_NAME);
+    const content = await readFile(samplePath, "utf-8");
+    const parsed = parsePlateRows(parseDelimitedRows(content, DEMO_FILE_NAME), DEMO_FILE_NAME);
+    if (!parsed || parsed.stats.well_count !== 96) {
+      throw new Error("Bundled demo plate did not parse as a complete 96-well plate.");
     }
 
+    const [inserted] = await db.insert(experiments).values({
+      user_id: DEMO_USER_ID,
+      name: DEMO_EXPERIMENT_NAME,
+      date: "2026-08-15",
+      assay_type: "Cell viability dose response",
+      instrument: parsed.metadata.instrument ?? "Plate reader",
+      status: "success",
+      notes: "Bundled demo: a complete 96-well viability plate with positive, negative, and blank controls. Explore the heatmap, Z′, CV%, and dose-response tools without connecting an instrument.",
+      file_name: DEMO_FILE_NAME,
+      raw_data_json: JSON.stringify({ ...parsed, _type: "plate96" }),
+      control_summary_json: JSON.stringify(DEMO_CONTROL_SUMMARY),
+    }).returning({ id: experiments.id });
+
     logger.info(
-      { database: "primary", insertedCount: SEED_EXPERIMENTS.length },
-      "Initial demo experiment seeding completed successfully; the inserted records are available to the shared synthetic seed user.",
+      { demoExperimentId: inserted?.id, fileName: DEMO_FILE_NAME },
+      "The bundled sample plate was inserted for the explicit local demo account and is ready for deterministic analysis.",
     );
-  } catch (err) {
+  } catch (error) {
     logger.error(
-      { err, database: "primary", attemptedInsertCount: SEED_EXPERIMENTS.length, retryExpected: true },
-      "Initial demo experiment seeding did not complete; the API remains available, but demo records may be absent or partial. Check database connectivity and write permissions before rerunning the idempotent seed task.",
+      { err: error, demoUserId: DEMO_USER_ID, fileName: DEMO_FILE_NAME, retryExpected: false },
+      "The local demo sample plate could not be seeded; the API remains available, but the no-instrument demo will be empty. Verify that examples/demo-dose-response-plate.csv is included in the deployment.",
     );
   }
 }

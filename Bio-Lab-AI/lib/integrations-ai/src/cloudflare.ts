@@ -137,7 +137,16 @@ function errorMessage(payload: CloudflareEnvelope | null, fallback: string): str
 }
 
 function retryableStatus(status: number): boolean {
-  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+  // A Workers AI 429 commonly means the account-wide daily neuron allocation
+  // is exhausted. Retrying the same request burns latency and produces the same
+  // result, so only genuinely transient statuses are retried automatically.
+  return status === 408 || status === 409 || status === 425 || status >= 500;
+}
+
+function nextUtcMidnight(): number {
+  const reset = new Date();
+  reset.setUTCHours(24, 0, 0, 0);
+  return reset.getTime();
 }
 
 function parseSseData(data: string): string {
@@ -159,6 +168,7 @@ export class CloudflareAiProvider implements AiProvider {
   private readonly apiToken: string;
   private readonly loraId?: string;
   private readonly timeoutMs: number;
+  private budgetUnavailableUntil = 0;
 
   constructor(env: NodeJS.ProcessEnv = process.env) {
     const deployment = readCloudflareAiDeploymentInfo(env);
@@ -186,6 +196,9 @@ export class CloudflareAiProvider implements AiProvider {
   }
 
   private async request(request: AiGenerateRequest, stream: boolean): Promise<Response> {
+    if (this.budgetUnavailableUntil > Date.now()) {
+      throw new AiProviderError("The shared Workers AI daily allocation is exhausted.", 429, false);
+    }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -200,6 +213,7 @@ export class CloudflareAiProvider implements AiProvider {
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => null) as CloudflareEnvelope | null;
+        if (response.status === 429) this.budgetUnavailableUntil = nextUtcMidnight();
         throw new AiProviderError(
           errorMessage(payload, `Workers AI request failed with status ${response.status}.`),
           response.status === 429 ? 429 : 502,

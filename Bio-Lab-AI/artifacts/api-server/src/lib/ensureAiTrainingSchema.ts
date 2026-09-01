@@ -65,10 +65,15 @@ export async function ensureAiTrainingSchema(): Promise<void> {
       CREATE TABLE IF NOT EXISTS ai_daily_usage (
         usage_day date PRIMARY KEY,
         request_count integer NOT NULL DEFAULT 0,
+        estimated_neurons integer NOT NULL DEFAULT 0,
         updated_at timestamp with time zone NOT NULL DEFAULT now(),
         CONSTRAINT ai_daily_usage_request_count_check
           CHECK (request_count >= 0)
       )
+    `);
+    await client.query(`
+      ALTER TABLE ai_daily_usage
+        ADD COLUMN IF NOT EXISTS estimated_neurons integer NOT NULL DEFAULT 0
     `);
     await client.query("COMMIT");
   } catch (error) {

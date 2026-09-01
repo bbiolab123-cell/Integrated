@@ -100,6 +100,41 @@ export interface CreateExperimentBody {
   file_content_b64?: string;
 }
 
+export interface PlateSelection {
+  /** @minimum 0 */
+  start_row: number;
+  /** @minimum 0 */
+  start_column: number;
+  transpose?: boolean;
+}
+
+export interface PlateImportBody {
+  file_name: string;
+  file_content_b64: string;
+  plate_selection?: PlateSelection;
+}
+
+export type AttachExperimentDataBodyControlRoles = {
+  [key: string]: "pos" | "neg" | "blank" | "sample";
+};
+
+export type AttachExperimentDataBody = PlateImportBody & {
+  control_roles?: AttachExperimentDataBodyControlRoles;
+};
+
+export type PlateImportPreviewCode =
+  (typeof PlateImportPreviewCode)[keyof typeof PlateImportPreviewCode];
+
+export const PlateImportPreviewCode = {
+  PLATE_GRID_NOT_FOUND: "PLATE_GRID_NOT_FOUND",
+} as const;
+
+export interface PlateImportPreview {
+  error: string;
+  code: PlateImportPreviewCode;
+  preview: string[][];
+}
+
 export type UpdateExperimentBodyStatus =
   (typeof UpdateExperimentBodyStatus)[keyof typeof UpdateExperimentBodyStatus];
 
@@ -248,6 +283,8 @@ export type ListExperimentsParams = {
   status?: string;
   search?: string;
 };
+
+export type ParsePlateImport200 = { [key: string]: unknown };
 
 export type ListAiConversationsParams = {
   experiment_id?: number;

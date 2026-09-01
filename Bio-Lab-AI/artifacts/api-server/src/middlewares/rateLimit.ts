@@ -119,30 +119,37 @@ export const aiRateLimiter = createRateLimiter({
 export type AiDailyQuotaResult = {
   allowed: boolean;
   used: number;
+  estimatedNeuronsUsed?: number;
 };
 
 export type AiDailyQuotaStore = {
-  consume(day: string, limit: number): Promise<AiDailyQuotaResult>;
+  consume(day: string, requestLimit: number, neuronLimit: number, estimatedNeuronCost: number): Promise<AiDailyQuotaResult>;
 };
 
 const postgresAiDailyQuotaStore: AiDailyQuotaStore = {
-  async consume(day, limit) {
+  async consume(day, requestLimit, neuronLimit, estimatedNeuronCost) {
     // Keep the database module lazy so pure unit tests can exercise quota and
     // rollout behavior without needing a live DATABASE_URL.
     const { pool } = await import("@workspace/db");
-    const result = await pool.query<{ request_count: number }>(`
-      INSERT INTO ai_daily_usage (usage_day, request_count, updated_at)
-      VALUES ($1::date, 1, now())
+    const result = await pool.query<{ request_count: number; estimated_neurons: number }>(`
+      INSERT INTO ai_daily_usage (usage_day, request_count, estimated_neurons, updated_at)
+      VALUES ($1::date, 1, $4, now())
       ON CONFLICT (usage_day) DO UPDATE
         SET request_count = ai_daily_usage.request_count + 1,
+            estimated_neurons = ai_daily_usage.estimated_neurons + $4,
             updated_at = now()
         WHERE ai_daily_usage.request_count < $2
-      RETURNING request_count
-    `, [day, limit]);
+          AND ai_daily_usage.estimated_neurons + $4 <= $3
+      RETURNING request_count, estimated_neurons
+    `, [day, requestLimit, neuronLimit, estimatedNeuronCost]);
     if (result.rowCount && result.rows[0]) {
-      return { allowed: true, used: Number(result.rows[0].request_count) };
+      return {
+        allowed: true,
+        used: Number(result.rows[0].request_count),
+        estimatedNeuronsUsed: Number(result.rows[0].estimated_neurons),
+      };
     }
-    return { allowed: false, used: limit };
+    return { allowed: false, used: requestLimit, estimatedNeuronsUsed: neuronLimit };
   },
 };
 
@@ -188,12 +195,17 @@ export async function aiDailyQuota(req: Request, res: Response, next: NextFuncti
   }
   const day = new Date().toISOString().slice(0, 10);
   const limit = readPositiveIntEnv("AI_DAILY_REQUEST_LIMIT", 50);
+  // Workers AI bills model work in neurons. Keep a safety reserve below the
+  // advertised free allocation and assign every request a conservative cost;
+  // the request ceiling remains as a second guard against unusually cheap spam.
+  const neuronLimit = readPositiveIntEnv("AI_DAILY_ESTIMATED_NEURON_LIMIT", 9_000);
+  const estimatedNeuronCost = readPositiveIntEnv("AI_ESTIMATED_NEURONS_PER_REQUEST", 180);
   let quota: AiDailyQuotaResult;
   try {
-    quota = await aiDailyQuotaStore.consume(day, limit);
+    quota = await aiDailyQuotaStore.consume(day, limit, neuronLimit, estimatedNeuronCost);
   } catch (error) {
     requestLogger(req).error(
-      { err: error, database: "primary", quotaDay: day, requestLimit: limit, retryExpected: true },
+      { err: error, database: "primary", quotaDay: day, requestLimit: limit, estimatedNeuronLimit: neuronLimit, retryExpected: true },
       "The AI request was blocked because the daily usage counter could not be read or updated atomically; failing closed prevents untracked provider usage. Check database connectivity and the ai_daily_usage table, then retry.",
     );
     res.status(503).json({
@@ -212,6 +224,8 @@ export async function aiDailyQuota(req: Request, res: Response, next: NextFuncti
         quotaDay: day,
         requestCount: quota.used,
         requestLimit: limit,
+        estimatedNeuronsUsed: quota.estimatedNeuronsUsed,
+        estimatedNeuronLimit: neuronLimit,
         retryAfterSeconds: retryAfter,
         retryExpected: true,
       },
@@ -220,13 +234,18 @@ export async function aiDailyQuota(req: Request, res: Response, next: NextFuncti
     res.setHeader("Retry-After", String(retryAfter));
     res.setHeader("AI-Daily-Limit", String(limit));
     res.setHeader("AI-Daily-Remaining", "0");
+    res.setHeader("AI-Estimated-Neuron-Limit", String(neuronLimit));
+    res.setHeader("AI-Estimated-Neuron-Remaining", "0");
     res.status(429).json({
-      error: "The free daily AI limit has been reached. Please try again after the UTC reset.",
+      error: "The free daily AI limit has been reached. Plate heatmaps, CV%, Z′, and IC50 tools still work; AI returns after the UTC reset.",
+      code: "AI_BUDGET_EXHAUSTED",
       retry_after_seconds: retryAfter,
     });
     return;
   }
   res.setHeader("AI-Daily-Limit", String(limit));
   res.setHeader("AI-Daily-Remaining", String(Math.max(0, limit - quota.used)));
+  res.setHeader("AI-Estimated-Neuron-Limit", String(neuronLimit));
+  res.setHeader("AI-Estimated-Neuron-Remaining", String(Math.max(0, neuronLimit - (quota.estimatedNeuronsUsed ?? estimatedNeuronCost))));
   next();
 }

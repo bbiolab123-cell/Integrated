@@ -1,0 +1,19 @@
+name: Keep BioLab API awake
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ping the public health endpoint
+        env:
+          KEEPALIVE_URL: ${{ vars.BIOLAB_API_KEEPALIVE_URL || 'https://biolab-copilot-api.onrender.com/health' }}
+        run: curl --fail --silent --show-error --max-time 30 --retry 2 --retry-delay 5 "$KEEPALIVE_URL"

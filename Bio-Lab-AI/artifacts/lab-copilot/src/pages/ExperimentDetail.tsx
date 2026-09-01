@@ -83,7 +83,11 @@ export function ExperimentDetail() {
         queryClient.invalidateQueries({ queryKey: getGetExperimentQueryKey(expId) });
       },
       onError: () => {
-        toast({ title: "Analysis failed", description: "Unknown error", variant: "destructive" });
+        toast({
+          title: "AI is unavailable right now",
+          description: "Your heatmap, CV%, Z′, dose-response, and IC50 tools still work. Try the narrative analysis again after the daily reset.",
+          variant: "destructive",
+        });
       }
     }
   });
@@ -135,10 +139,25 @@ export function ExperimentDetail() {
     let r: Record<string, WellRole> = {};
     try {
       const raw = expId ? localStorage.getItem(`layout:${expId}`) : null;
-      if (raw) r = JSON.parse(raw) || {};
+      if (raw) {
+        r = JSON.parse(raw) || {};
+      } else if (experiment?.control_summary_json) {
+        const summary = JSON.parse(experiment.control_summary_json) as Record<string, unknown>;
+        const assign = (key: string, role: WellRole) => {
+          if (!Array.isArray(summary[key])) return;
+          for (const well of summary[key] as unknown[]) {
+            const label = String(well).trim().toUpperCase();
+            if (/^[A-H](?:[1-9]|1[0-2])$/.test(label)) r[label] = role;
+          }
+        };
+        assign("positive_control_wells", "pos");
+        assign("negative_control_wells", "neg");
+        assign("blank_wells", "blank");
+        assign("sample_wells", "sample");
+      }
     } catch { /* ignore */ }
     setWellRoles(r);
-  }, [expId]);
+  }, [expId, experiment?.control_summary_json]);
 
   // Persist layout on change (skip the write caused by the load above).
   useEffect(() => {
@@ -667,10 +686,11 @@ export function ExperimentDetail() {
                       meanNeg={controlMetrics?.meanNeg ?? null}
                     />
                     {rawData.stats && (
-                      <div className={`grid grid-cols-2 gap-3 mt-5 ${zPrimeDisplay !== null ? "md:grid-cols-3 lg:grid-cols-6" : "md:grid-cols-3 lg:grid-cols-5"}`}>
+                      <div className={`grid grid-cols-2 gap-3 mt-5 ${zPrimeDisplay !== null ? "md:grid-cols-4 lg:grid-cols-7" : "md:grid-cols-3 lg:grid-cols-6"}`}>
                         {[
                           { label: "Mean", value: rawData.stats.mean },
                           { label: "Std Dev", value: rawData.stats.sd },
+                          { label: "CV%", value: rawData.stats.cv_pct != null ? `${Number(rawData.stats.cv_pct).toFixed(1)}%` : "–" },
                           { label: "SEM", value: sem != null ? Number(sem.toFixed(3)) : null },
                           { label: "Min", value: rawData.stats.min },
                           { label: "Max", value: rawData.stats.max },

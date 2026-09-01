@@ -30,6 +30,13 @@ import { decodeUpload, UploadInputError } from "../lib/uploadValidation";
 import ExcelJS from "exceljs";
 import mammoth from "mammoth";
 import { logger } from "../lib/logger";
+import {
+  parseDelimitedRows,
+  parsePlateRows,
+  previewRows,
+  type PlateSelection,
+  type WellData as ImportedWellData,
+} from "../lib/plateImport";
 
 const router: IRouter = Router();
 const MAX_WORKBOOK_ROWS = 512;
@@ -109,6 +116,80 @@ async function readFirstWorksheetRows(buffer: Buffer): Promise<unknown[][]> {
     rows.push(values);
   }
   return rows;
+}
+
+async function readUploadedRows(buffer: Buffer, filename: string): Promise<unknown[][]> {
+  const ext = filename.split(".").pop()?.toLowerCase();
+  if (ext === "xlsx") return readFirstWorksheetRows(buffer);
+  const rows = parseDelimitedRows(buffer.toString("utf-8"), filename);
+  if (rows.length > MAX_TEXT_ROWS + 1) {
+    throw new UploadInputError(`Text file has too many rows. Maximum supported row count is ${MAX_TEXT_ROWS}.`, 413);
+  }
+  if (Math.max(0, ...rows.map((row) => row.length)) > MAX_TEXT_COLUMNS) {
+    throw new UploadInputError(`Text file has too many columns. Maximum supported column count is ${MAX_TEXT_COLUMNS}.`, 413);
+  }
+  return rows;
+}
+
+function plateSelection(value: unknown): PlateSelection | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const startRow = Number(record.start_row);
+  const startColumn = Number(record.start_column);
+  if (!Number.isInteger(startRow) || !Number.isInteger(startColumn)) return undefined;
+  return { start_row: startRow, start_column: startColumn, transpose: record.transpose === true };
+}
+
+type ImportRole = "pos" | "neg" | "blank" | "sample";
+
+function importControlSummary(wells: ImportedWellData[], value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const roles: Record<string, ImportRole> = {};
+  for (const [well, role] of Object.entries(value as Record<string, unknown>)) {
+    const normalizedWell = well.trim().toUpperCase();
+    if (WELL_ID_RE.test(normalizedWell) && ["pos", "neg", "blank", "sample"].includes(String(role))) {
+      roles[normalizedWell] = role as ImportRole;
+    }
+  }
+  if (!Object.keys(roles).length) return null;
+
+  const names = (role: ImportRole) => Object.entries(roles)
+    .filter(([, assigned]) => assigned === role)
+    .map(([well]) => well)
+    .sort();
+  const values = (role: ImportRole) => wells
+    .filter((well) => roles[well.well] === role && well.value !== null && Number.isFinite(well.value))
+    .map((well) => well.value as number);
+  const mean = (items: number[]) => items.length ? items.reduce((sum, item) => sum + item, 0) / items.length : null;
+  const sd = (items: number[]) => {
+    if (items.length < 2) return null;
+    const average = mean(items)!;
+    return Math.sqrt(items.reduce((sum, item) => sum + (item - average) ** 2, 0) / (items.length - 1));
+  };
+  const positive = values("pos");
+  const negative = values("neg");
+  const meanPositive = mean(positive);
+  const meanNegative = mean(negative);
+  const sdPositive = sd(positive);
+  const sdNegative = sd(negative);
+  const separation = meanPositive !== null && meanNegative !== null ? Math.abs(meanPositive - meanNegative) : 0;
+  const zprime = separation > 0 && sdPositive !== null && sdNegative !== null
+    ? 1 - (3 * (sdPositive + sdNegative)) / separation
+    : null;
+  const ratio = meanPositive !== null && meanNegative !== null && meanNegative !== 0
+    ? Math.abs(meanPositive) / Math.abs(meanNegative)
+    : null;
+  const round = (number: number | null) => number === null ? null : Number(number.toFixed(3));
+  return {
+    positive_control_wells: names("pos"),
+    negative_control_wells: names("neg"),
+    blank_wells: names("blank"),
+    sample_wells: names("sample"),
+    mean_positive: round(meanPositive),
+    mean_negative: round(meanNegative),
+    zprime: round(zprime),
+    signal_to_background: round(ratio === null ? null : ratio >= 1 ? ratio : ratio === 0 ? null : 1 / ratio),
+  };
 }
 
 async function findOwnedExperiment(experimentId: number, userId: string): Promise<typeof experiments.$inferSelect | null> {
@@ -380,19 +461,22 @@ router.post("/experiments/:id/data", async (req, res) => {
     const exp = await findOwnedExperiment(id, userId);
     if (!exp) return res.status(404).json({ error: "Experiment not found" });
 
-    const rawDataJson = await parseFileContent(fileContentB64, fileName);
+    const selection = plateSelection(body.plate_selection);
+    const rawDataJson = await parseFileContent(fileContentB64, fileName, selection);
     // Guard against degenerate parses so we never overwrite good analysis with junk:
     // parseFileContent returns { error } for empty/too-short files, or a plate96 with
     // zero readings when no 8×12 grid was found. Reject both rather than attaching them.
+    let parsedPlate: { _type?: string; error?: string; stats?: { well_count?: number }; wells?: ImportedWellData[] } | null = null;
     try {
-      const parsed = JSON.parse(rawDataJson) as { _type?: string; error?: string; stats?: { well_count?: number } };
+      const parsed = JSON.parse(rawDataJson) as { _type?: string; error?: string; stats?: { well_count?: number }; wells?: ImportedWellData[] };
+      parsedPlate = parsed;
       if (parsed.error) {
         req.log.warn(
           { experimentId: id, fileName, parserReason: parsed.error, statusCode: 422, retryExpected: false },
           "The experiment data upload contained no usable measurements, so existing experiment data was not replaced. Export a supported plate matrix or delimited table and verify that it includes headers and data rows before retrying.",
         );
         return res.status(422).json({
-          error: "Couldn't read any data from this file. Upload a Gen5 / Synergy H1 .xlsx plate export, or a CSV/TSV with a header row.",
+          error: "Couldn't read any data from this file. Upload a plate-reader XLSX, CSV, TSV, or TXT export.",
         });
       }
       if (parsed._type === "plate96" && (parsed.stats?.well_count ?? 0) === 0) {
@@ -401,7 +485,8 @@ router.post("/experiments/:id/data", async (req, res) => {
           "The experiment data upload was readable but no 96-well plate grid was detected, so existing data was not replaced. Export rows A–H and columns 1–12 as a matrix or use a supported delimited-table layout.",
         );
         return res.status(422).json({
-          error: "Couldn't find a 96-well plate grid in this file. Export the plate as a matrix (rows A–H, columns 1–12), or upload a CSV/TSV for other layouts.",
+          error: "Couldn't find a 96-well plate grid automatically. Open the manual grid picker and select the 8×12 plate block.",
+          code: "PLATE_GRID_NOT_FOUND",
         });
       }
     } catch (err) {
@@ -411,12 +496,16 @@ router.post("/experiments/:id/data", async (req, res) => {
       );
     }
 
+    const importedControls = parsedPlate?._type === "plate96" && Array.isArray(parsedPlate.wells)
+      ? importControlSummary(parsedPlate.wells, body.control_roles)
+      : null;
+
     const [updated] = await db
       .update(experiments)
       .set({
         raw_data_json: rawDataJson,
         file_name: fileName,
-        control_summary_json: null,
+        control_summary_json: importedControls ? JSON.stringify(importedControls) : null,
         ai_summary: null,
         ai_summary_request_id: null,
         ai_next_experiments_json: null,
@@ -1453,11 +1542,12 @@ router.post("/experiments/compare", aiRateLimiter, aiDailyQuota, async (req, res
   }
 });
 
-router.post("/experiments/parse-synergy", async (req, res) => {
+router.post(["/experiments/parse-plate", "/experiments/parse-synergy"], async (req, res) => {
   try {
-    const { file_content_b64, file_name } = req.body as {
+    const { file_content_b64, file_name, plate_selection } = req.body as {
       file_content_b64: string;
       file_name: string;
+      plate_selection?: unknown;
     };
 
     if (!file_content_b64 || !file_name) {
@@ -1465,29 +1555,28 @@ router.post("/experiments/parse-synergy", async (req, res) => {
     }
 
     const buffer = decodeUpload(file_content_b64, file_name);
-    const rows = await readFirstWorksheetRows(buffer);
+    const rows = await readUploadedRows(buffer, file_name);
     if (!rows.length) {
       req.log.warn(
         { fileName: file_name, detectedRowCount: 0, statusCode: 422, retryExpected: false },
         "The uploaded plate spreadsheet was readable but empty, so no measurements were returned. Export a worksheet containing the plate matrix before retrying.",
       );
-      return res.status(422).json({ error: "This spreadsheet is empty. Upload a Gen5 / Synergy H1 plate export with data." });
+      return res.status(422).json({ error: "This file is empty. Upload a populated plate-reader export." });
     }
 
-    const result = parseSynergyH1Rows(rows, file_name);
-    // A valid parse still yields zero readings when the sheet has no detectable
-    // 8×12 grid (wrong export, transposed layout, or a non-plate sheet). Tell the
-    // user instead of returning a blank heatmap.
-    if (result.stats.well_count === 0) {
+    const result = parsePlateRows(rows, file_name, plateSelection(plate_selection));
+    if (!result || result.stats.well_count === 0) {
       req.log.warn(
-        { fileName: file_name, detectedWellCount: 0, statusCode: 422, retryExpected: false },
-        "The uploaded spreadsheet was readable but no 96-well plate grid was detected, so no measurements were returned. Export rows A–H and columns 1–12 as a matrix or use the supported delimited-table upload.",
+        { fileName: file_name, detectedWellCount: 0, statusCode: 422, fallback: "manual_grid_picker", retryExpected: false },
+        "The uploaded plate file was readable but no 96-well grid was detected automatically, so a bounded table preview was returned for manual selection.",
       );
       return res.status(422).json({
-        error: "Couldn't find a 96-well plate grid in this file. Export the plate as a matrix (rows A–H, columns 1–12) from Gen5, or use the CSV/TSV upload for other layouts.",
+        error: "Couldn't find the plate automatically. Drag across the 8×12 plate block below.",
+        code: "PLATE_GRID_NOT_FOUND",
+        preview: previewRows(rows, 80, 40),
       });
     }
-    return res.json(result);
+    return res.json({ ...result, _type: "plate96" });
   } catch (err) {
     if (err instanceof UploadInputError) {
       req.log.warn(
@@ -1498,7 +1587,7 @@ router.post("/experiments/parse-synergy", async (req, res) => {
     }
     req.log.error(
       { err, fileName: optionalString(requestBody(req.body).file_name), component: "plate_file_parser", statusCode: 400, retryExpected: false },
-      "The uploaded plate file could not be decoded or parsed into supported measurements, so no result was returned. Verify that the export is a valid CSV, TSV, TXT, or XLSX plate file and inspect the parser error before retrying.",
+      "The uploaded plate file could not be decoded or parsed into supported measurements, so no result was returned. Verify that the export is a valid CSV, TSV, TXT, or XLSX file and inspect the parser error before retrying.",
     );
     return res.status(400).json({ error: "Could not parse uploaded file. Please upload a valid CSV, TSV, TXT, or XLSX export." });
   }
@@ -1691,7 +1780,7 @@ function parseSynergyH1Rows(rows: unknown[][], filename: string): PlateParseResu
   };
 }
 
-async function parseFileContent(b64: string, filename: string): Promise<string> {
+async function parseFileContent(b64: string, filename: string, selection?: PlateSelection): Promise<string> {
   try {
     const ext = filename.split(".").pop()?.toLowerCase();
     const buffer = decodeUpload(b64, filename);
@@ -1704,11 +1793,17 @@ async function parseFileContent(b64: string, filename: string): Promise<string> 
         );
         return JSON.stringify({ error: "No rows found", filename });
       }
-      const result = parseSynergyH1Rows(rows, filename);
-      return JSON.stringify({ ...result, _type: "plate96" });
+      const result = parsePlateRows(rows, filename, selection);
+      return result
+        ? JSON.stringify({ ...result, _type: "plate96" })
+        : JSON.stringify({ error: "No 96-well plate grid detected", code: "PLATE_GRID_NOT_FOUND", filename });
     }
 
     const content = buffer.toString("utf-8");
+    const tableRows = parseDelimitedRows(content, filename);
+    const plateResult = parsePlateRows(tableRows, filename, selection);
+    if (plateResult) return JSON.stringify({ ...plateResult, _type: "plate96" });
+    if (selection) return JSON.stringify({ error: "The selected cells contain no plate measurements", filename });
     const lines = content.split(/\r?\n/).filter((l) => l.trim());
     if (lines.length > MAX_TEXT_ROWS + 1) {
       throw new UploadInputError(`Text file has too many rows. Maximum supported row count is ${MAX_TEXT_ROWS}.`, 413);

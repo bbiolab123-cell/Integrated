@@ -164,6 +164,37 @@ test("Cloudflare provider translates non-streaming and SSE responses", async () 
   }
 });
 
+test("Cloudflare provider opens a circuit after account-wide quota exhaustion", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  const env = {
+    CLOUDFLARE_ACCOUNT_ID: "account",
+    CLOUDFLARE_API_TOKEN: "token",
+    CLOUDFLARE_MODEL: "@cf/mistral/mistral-7b-instruct-v0.2-lora",
+  } as NodeJS.ProcessEnv;
+  try {
+    globalThis.fetch = async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ success: false, errors: [{ message: "daily allocation reached" }] }), {
+        status: 429,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    const provider = new CloudflareAiProvider(env);
+    await assert.rejects(
+      provider.generate({ requestId: "quota-1", messages: [{ role: "user", content: "hi" }] }),
+      (error: unknown) => error instanceof AiProviderError && error.statusCode === 429 && error.retryable === false,
+    );
+    await assert.rejects(
+      provider.generate({ requestId: "quota-2", messages: [{ role: "user", content: "again" }] }),
+      (error: unknown) => error instanceof AiProviderError && error.statusCode === 429,
+    );
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("Cloudflare deployment blocks unapproved adapters and public rollout before smoke tests", () => {
   const sha = "a".repeat(64);
   const base = {
@@ -305,6 +336,46 @@ test("daily quota returns a clear limit response without invoking the handler", 
     else process.env.AI_DAILY_REQUEST_LIMIT = previousLimit;
     if (previousRollout === undefined) delete process.env.AI_ROLLOUT_PERCENT;
     else process.env.AI_ROLLOUT_PERCENT = previousRollout;
+  }
+});
+
+test("daily quota stops before the estimated neuron reserve is consumed", async () => {
+  const previousRollout = process.env.AI_ROLLOUT_PERCENT;
+  const previousNeuronLimit = process.env.AI_DAILY_ESTIMATED_NEURON_LIMIT;
+  const previousNeuronCost = process.env.AI_ESTIMATED_NEURONS_PER_REQUEST;
+  process.env.AI_ROLLOUT_PERCENT = "100";
+  process.env.AI_DAILY_ESTIMATED_NEURON_LIMIT = "200";
+  process.env.AI_ESTIMATED_NEURONS_PER_REQUEST = "180";
+  let used = 0;
+  let nextCalls = 0;
+  let statusCode = 200;
+  let payload: unknown;
+  setAiDailyQuotaStoreForTests({
+    async consume(_day, _requestLimit, neuronLimit, estimatedCost) {
+      if (used + estimatedCost > neuronLimit) return { allowed: false, used: 1, estimatedNeuronsUsed: used };
+      used += estimatedCost;
+      return { allowed: true, used: 1, estimatedNeuronsUsed: used };
+    },
+  });
+  const response = {
+    setHeader() { return this; },
+    status(value: number) { statusCode = value; return this; },
+    json(value: unknown) { payload = value; return this; },
+  } as unknown as Response;
+  try {
+    await aiDailyQuota({ userId: "neuron_test_user" } as unknown as Request, response, (() => { nextCalls += 1; }) as NextFunction);
+    await aiDailyQuota({ userId: "neuron_test_user" } as unknown as Request, response, (() => { nextCalls += 1; }) as NextFunction);
+    assert.equal(nextCalls, 1);
+    assert.equal(statusCode, 429);
+    assert.equal((payload as { code: string }).code, "AI_BUDGET_EXHAUSTED");
+  } finally {
+    setAiDailyQuotaStoreForTests(null);
+    if (previousRollout === undefined) delete process.env.AI_ROLLOUT_PERCENT;
+    else process.env.AI_ROLLOUT_PERCENT = previousRollout;
+    if (previousNeuronLimit === undefined) delete process.env.AI_DAILY_ESTIMATED_NEURON_LIMIT;
+    else process.env.AI_DAILY_ESTIMATED_NEURON_LIMIT = previousNeuronLimit;
+    if (previousNeuronCost === undefined) delete process.env.AI_ESTIMATED_NEURONS_PER_REQUEST;
+    else process.env.AI_ESTIMATED_NEURONS_PER_REQUEST = previousNeuronCost;
   }
 });
 

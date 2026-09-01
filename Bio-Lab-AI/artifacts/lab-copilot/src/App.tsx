@@ -15,6 +15,7 @@ import { isEnabled } from "@/lib/features";
 import { ShieldAlert } from "lucide-react";
 import { AmbientBackdrop } from "@/components/layout/AmbientBackdrop";
 import { InteractionFeedback } from "@/components/motion/InteractionFeedback";
+import { PrivacyPage } from "@/pages/PrivacyPage";
 
 // Demo application attribution: made by Srivanth Dasu.
 
@@ -163,6 +164,7 @@ function AppRoutes({ isAdmin }: { isAdmin: boolean }) {
       <Suspense fallback={<RouteLoading />}><Switch>
         <Route path="/" component={() => <Redirect to="/dashboard" />} />
         <Route path="/landing"><LandingPage /></Route>
+        <Route path="/privacy"><PrivacyPage /></Route>
         <Route path="/dashboard">
           <Layout><AnimatedRoute><Dashboard /></AnimatedRoute></Layout>
         </Route>
@@ -351,6 +353,7 @@ function ClerkAppRoutes() {
         <Route path="/" component={HomeRedirect} />
         <Route path="/sign-in/*?" component={SignInPage} />
         <Route path="/sign-up/*?" component={SignUpPage} />
+        <Route path="/privacy" component={PrivacyPage} />
         <Route path="/dashboard">
           <Show when="signed-in"><Layout><AnimatedRoute><Dashboard /></AnimatedRoute></Layout></Show>
           <Show when="signed-out"><Redirect to="/" /></Show>
@@ -457,7 +460,14 @@ function App() {
     <MotionConfig reducedMotion="user">
       <InteractionFeedback>
         {AUTH_CONFIG_MISSING ? (
-          <AuthConfigurationError />
+          <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false}>
+            <WouterRouter base={basePath}>
+              <Switch>
+                <Route path="/privacy" component={PrivacyPage} />
+                <Route component={AuthConfigurationError} />
+              </Switch>
+            </WouterRouter>
+          </ThemeProvider>
         ) : DEMO_MODE ? (
           <DemoApp />
         ) : (

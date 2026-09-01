@@ -5,6 +5,7 @@ import pinoHttp from "pino-http";
 import { randomUUID } from "node:crypto";
 import { clerkMiddleware } from "@clerk/express";
 import router from "./routes";
+import { healthCheck } from "./routes/health";
 import { logger } from "./lib/logger";
 import { apiRateLimiter } from "./middlewares/rateLimit";
 import {
@@ -153,6 +154,10 @@ app.use(
 app.use(cors(corsOptions));
 app.use(express.json({ limit: process.env.REQUEST_BODY_LIMIT ?? "5mb" }));
 app.use(express.urlencoded({ extended: true, limit: process.env.REQUEST_BODY_LIMIT ?? "5mb" }));
+
+// Public root-level alias for uptime services. The canonical API probe remains
+// /api/healthz, but /health avoids coupling an external monitor to API routing.
+app.get("/health", healthCheck);
 
 app.use("/api", (_req, res, next) => {
   res.setHeader("Cache-Control", "no-store");

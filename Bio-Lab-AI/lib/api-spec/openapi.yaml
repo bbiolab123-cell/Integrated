@@ -189,6 +189,63 @@ paths:
               schema:
                 $ref: "#/components/schemas/ApiError"
 
+  /experiments/parse-plate:
+    post:
+      operationId: parsePlateImport
+      tags: [experiments]
+      summary: Detect or manually select a 96-well plate grid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlateImportBody"
+      responses:
+        "200":
+          description: Parsed 96-well plate
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "422":
+          description: Automatic detection failed; includes a bounded preview for manual selection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlateImportPreview"
+
+  /experiments/{id}/data:
+    post:
+      operationId: attachExperimentData
+      tags: [experiments]
+      summary: Parse and attach plate-reader data to an experiment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AttachExperimentDataBody"
+      responses:
+        "200":
+          description: Experiment with attached data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Experiment"
+        "422":
+          description: File could not be mapped to a usable plate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
   /experiments/{id}/analyze:
     post:
       operationId: analyzeExperiment
@@ -532,6 +589,65 @@ components:
         - name
         - date
         - assay_type
+
+    PlateSelection:
+      type: object
+      properties:
+        start_row:
+          type: integer
+          minimum: 0
+        start_column:
+          type: integer
+          minimum: 0
+        transpose:
+          type: boolean
+          default: false
+      required:
+        - start_row
+        - start_column
+
+    PlateImportBody:
+      type: object
+      properties:
+        file_name:
+          type: string
+        file_content_b64:
+          type: string
+        plate_selection:
+          $ref: "#/components/schemas/PlateSelection"
+      required:
+        - file_name
+        - file_content_b64
+
+    AttachExperimentDataBody:
+      allOf:
+        - $ref: "#/components/schemas/PlateImportBody"
+        - type: object
+          properties:
+            control_roles:
+              type: object
+              additionalProperties:
+                type: string
+                enum: [pos, neg, blank, sample]
+
+    PlateImportPreview:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          enum: [PLATE_GRID_NOT_FOUND]
+        preview:
+          type: array
+          items:
+            type: array
+            items:
+              type: string
+      required:
+        - error
+        - code
+        - preview
 
     UpdateExperimentBody:
       type: object

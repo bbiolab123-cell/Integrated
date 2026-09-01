@@ -1,0 +1,51 @@
+name: Nightly encrypted database backup
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Verify backup secrets
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_ENCRYPTION_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+        run: |
+          test -n "$DATABASE_URL" || { echo "DATABASE_URL secret is required" >&2; exit 1; }
+          test -n "$BACKUP_ENCRYPTION_PASSPHRASE" || { echo "BACKUP_ENCRYPTION_PASSPHRASE secret is required" >&2; exit 1; }
+
+      - name: Create and encrypt PostgreSQL dump
+        id: dump
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_ENCRYPTION_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+        run: |
+          backup_dir="$(mktemp -d)"
+          backup_stamp="$(date -u +'%Y-%m-%dT%H-%M-%SZ')"
+          dump_path="$backup_dir/biolab-$backup_stamp.dump"
+          encrypted_path="$dump_path.gpg"
+          pg_dump --dbname="$DATABASE_URL" --format=custom --no-owner --no-acl --file="$dump_path"
+          test -s "$dump_path"
+          gpg --batch --yes --pinentry-mode loopback --passphrase "$BACKUP_ENCRYPTION_PASSPHRASE" --symmetric --cipher-algo AES256 --output "$encrypted_path" "$dump_path"
+          test -s "$encrypted_path"
+          sha256sum "$encrypted_path" > "$encrypted_path.sha256"
+          echo "backup_dir=$backup_dir" >> "$GITHUB_OUTPUT"
+          echo "backup_stamp=$backup_stamp" >> "$GITHUB_OUTPUT"
+
+      - name: Upload encrypted backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: biolab-postgres-${{ steps.dump.outputs.backup_stamp }}
+          path: |
+            ${{ steps.dump.outputs.backup_dir }}/*.dump.gpg
+            ${{ steps.dump.outputs.backup_dir }}/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

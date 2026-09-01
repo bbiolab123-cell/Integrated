@@ -40,6 +40,10 @@ services:
         sync: false
       - key: AI_DAILY_REQUEST_LIMIT
         value: "50"
+      - key: AI_DAILY_ESTIMATED_NEURON_LIMIT
+        value: "9000"
+      - key: AI_ESTIMATED_NEURONS_PER_REQUEST
+        value: "180"
       - key: AI_RATE_LIMIT_MAX
         value: "20"
       - key: AI_RATE_LIMIT_WINDOW_MS

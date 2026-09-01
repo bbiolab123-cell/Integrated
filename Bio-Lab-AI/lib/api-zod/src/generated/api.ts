@@ -244,6 +244,116 @@ export const GenerateDataAnalysisReportParams = zod.object({
 });
 
 /**
+ * @summary Detect or manually select a 96-well plate grid
+ */
+export const parsePlateImportBodyPlateSelectionStartRowMin = 0;
+
+export const parsePlateImportBodyPlateSelectionStartColumnMin = 0;
+
+export const parsePlateImportBodyPlateSelectionTransposeDefault = false;
+
+export const ParsePlateImportBody = zod.object({
+  file_name: zod.string(),
+  file_content_b64: zod.string(),
+  plate_selection: zod
+    .object({
+      start_row: zod
+        .number()
+        .min(parsePlateImportBodyPlateSelectionStartRowMin),
+      start_column: zod
+        .number()
+        .min(parsePlateImportBodyPlateSelectionStartColumnMin),
+      transpose: zod
+        .boolean()
+        .default(parsePlateImportBodyPlateSelectionTransposeDefault),
+    })
+    .optional(),
+});
+
+export const ParsePlateImportResponse = zod.record(zod.string(), zod.unknown());
+
+/**
+ * @summary Parse and attach plate-reader data to an experiment
+ */
+export const AttachExperimentDataParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const attachExperimentDataBodyOnePlateSelectionStartRowMin = 0;
+
+export const attachExperimentDataBodyOnePlateSelectionStartColumnMin = 0;
+
+export const attachExperimentDataBodyOnePlateSelectionTransposeDefault = false;
+
+export const AttachExperimentDataBody = zod
+  .object({
+    file_name: zod.string(),
+    file_content_b64: zod.string(),
+    plate_selection: zod
+      .object({
+        start_row: zod
+          .number()
+          .min(attachExperimentDataBodyOnePlateSelectionStartRowMin),
+        start_column: zod
+          .number()
+          .min(attachExperimentDataBodyOnePlateSelectionStartColumnMin),
+        transpose: zod
+          .boolean()
+          .default(attachExperimentDataBodyOnePlateSelectionTransposeDefault),
+      })
+      .optional(),
+  })
+  .and(
+    zod.object({
+      control_roles: zod
+        .record(zod.string(), zod.enum(["pos", "neg", "blank", "sample"]))
+        .optional(),
+    }),
+  );
+
+export const AttachExperimentDataResponse = zod.object({
+  id: zod.number(),
+  name: zod.string(),
+  date: zod.string(),
+  assay_type: zod.string(),
+  instrument: zod.string(),
+  notes: zod.string().nullish(),
+  status: zod.enum([
+    "designing",
+    "ready",
+    "running",
+    "success",
+    "failed",
+    "unknown",
+    "in_progress",
+  ]),
+  protocol_json: zod
+    .string()
+    .nullish()
+    .describe(
+      "Structured protocol (objective, materials, controls, steps, review notes) as JSON",
+    ),
+  file_name: zod.string().nullish(),
+  raw_data_json: zod.string().nullish(),
+  control_summary_json: zod.string().nullish(),
+  ai_summary: zod.string().nullish(),
+  ai_summary_request_id: zod.string().nullish(),
+  ai_next_experiments_json: zod.string().nullish(),
+  data_analysis_report: zod
+    .string()
+    .nullish()
+    .describe(
+      "Persisted long-form Data Analysis report (markdown) from POST \/:id\/data-analysis",
+    ),
+  data_analysis_request_id: zod.string().nullish(),
+  protocol_ai_request_id: zod.string().nullish(),
+  conversation_id: zod.number().optional(),
+  request_id: zod.string().uuid().nullish(),
+  created_at: zod.coerce.date(),
+  updated_at: zod.coerce.date(),
+});
+
+/**
  * @summary Generate AI analysis and suggestions for an experiment
  */
 export const AnalyzeExperimentParams = zod.object({

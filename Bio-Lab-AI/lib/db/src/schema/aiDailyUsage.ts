@@ -8,6 +8,7 @@ import { date, integer, pgTable, timestamp } from "drizzle-orm/pg-core";
 export const aiDailyUsage = pgTable("ai_daily_usage", {
   usage_day: date("usage_day").primaryKey(),
   request_count: integer("request_count").notNull().default(0),
+  estimated_neurons: integer("estimated_neurons").notNull().default(0),
   updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
