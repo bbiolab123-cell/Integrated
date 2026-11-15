@@ -1,3 +1,4 @@
+import { Link } from "wouter";
 import { useState, useRef, useEffect } from "react";
 import { apiFetch } from "@/lib/apiFetch";
 import { useQueryClient } from "@tanstack/react-query";
@@ -38,11 +39,12 @@ import {
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, ReferenceLine, ComposedChart, Line, Scatter, CartesianGrid } from "recharts";
-import { fit4PL, serialDilution } from "@/lib/doseResponse";
 import { PlateHeatmap } from "@/components/PlateHeatmap";
 import { CopilotChat } from "@/components/chat/CopilotChat";
 import { AttachDataCard } from "@/components/experiment/AttachDataCard";
-import { buildControlSummary, type WellRole } from "@/lib/plateMetrics";
+import { readPlateResults } from "@workspace/plate-analysis";
+import { PlateRunResults } from "@/components/PlateRunResults";
+import { PlateQuestions } from "@/components/experiment/PlateQuestions";
 import { printExperimentReport } from "@/lib/printExperimentReport";
 import { LabConversation, LabPageHeader, LabPanel, LabSectionHeader } from "@/components/lab/LivingLab";
 import { ImproveAiDialog } from "@/components/ai/ImproveAiDialog";
@@ -402,253 +404,6 @@ function QuantitativeSummaryPanel({ id }: { id: number }) {
     : <CsvPanel summary={summary} />;
 }
 
-interface QuantifyChartSpec {
-  type: "column_means" | "row_means" | "well_scatter" | "dose_response";
-  title: string;
-  dose_response_config?: {
-    orientation: "row" | "column";
-    index: string;
-    top_concentration: number;
-    unit: string;
-    dilution_factor: number;
-    reverse: boolean;
-  };
-}
-
-function fmtConc(x: number): string {
-  if (x >= 100) return x.toFixed(0);
-  if (x >= 1) return x.toFixed(1);
-  if (x >= 0.01) return x.toFixed(2);
-  return x.toExponential(1);
-}
-
-// Renders the chart the AI picked — but the AI only ever chose the TYPE (and,
-// for dose-response, config it read from the scientist's own question). Every
-// number plotted here is computed from the real wells, never from the AI's
-// response text.
-function QuantifyChart({ spec, wells }: { spec: QuantifyChartSpec; wells: PlateWell[] }) {
-  const tooltipStyle = {
-    contentStyle: { background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 },
-    itemStyle: { color: "hsl(var(--popover-foreground))" },
-    labelStyle: { color: "hsl(var(--popover-foreground))" },
-  };
-
-  if (spec.type === "column_means" || spec.type === "row_means") {
-    const isCol = spec.type === "column_means";
-    const data = isCol ? columnMeans(wells) : rowMeans(wells);
-    if (data.length === 0) return <p className="text-xs text-muted-foreground">Not enough data to plot.</p>;
-    return (
-      <div className="h-48 w-full">
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={data} margin={{ top: 8, right: 8, bottom: 8, left: 0 }}>
-            <XAxis dataKey={isCol ? "col" : "row"} tick={{ fontSize: 11 }} stroke="currentColor" className="text-muted-foreground" />
-            <YAxis tick={{ fontSize: 11 }} stroke="currentColor" className="text-muted-foreground" width={44} domain={["auto", "auto"]} />
-            <Tooltip
-              formatter={(v: number) => [v.toFixed(3), "mean"]}
-              labelFormatter={(l) => isCol ? `Column ${l}` : `Row ${l}`}
-              {...tooltipStyle}
-            />
-            <Bar dataKey="mean" radius={[3, 3, 0, 0]} fill="hsl(var(--primary))" fillOpacity={0.8} />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-    );
-  }
-
-  if (spec.type === "well_scatter") {
-    const data = wellScatter(wells);
-    if (data.length === 0) return <p className="text-xs text-muted-foreground">Not enough data to plot.</p>;
-    return (
-      <div className="h-48 w-full">
-        <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={data} margin={{ top: 8, right: 8, bottom: 8, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-            <XAxis dataKey="well" tick={{ fontSize: 9 }} stroke="currentColor" className="text-muted-foreground" interval={Math.ceil(data.length / 16)} />
-            <YAxis tick={{ fontSize: 11 }} stroke="currentColor" className="text-muted-foreground" width={44} domain={["auto", "auto"]} />
-            <Tooltip formatter={(v: number) => [v.toFixed(3), "value"]} {...tooltipStyle} />
-            <Scatter dataKey="value" fill="hsl(var(--primary))" isAnimationActive={false} />
-          </ComposedChart>
-        </ResponsiveContainer>
-      </div>
-    );
-  }
-
-  // dose_response
-  const cfg = spec.dose_response_config;
-  if (!cfg) return <p className="text-xs text-muted-foreground">Missing dose configuration — try specifying the column/row, top concentration, and dilution factor.</p>;
-
-  const ROWS = ["A", "B", "C", "D", "E", "F", "G", "H"];
-  const COLS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-  const wellMap = new Map(wells.map((w) => [w.well, w]));
-  let series = cfg.orientation === "column"
-    ? ROWS.map((r) => wellMap.get(`${r}${cfg.index}`)).filter((w): w is PlateWell => !!w)
-    : COLS.map((c) => wellMap.get(`${cfg.index}${c}`)).filter((w): w is PlateWell => !!w);
-  series = series.filter((w) => w.value !== null && w.status !== "blank");
-  if (cfg.reverse) series = [...series].reverse();
-
-  if (series.length < 4) {
-    return <p className="text-xs text-muted-foreground">Not enough wells along that {cfg.orientation} to fit a curve (need at least 4).</p>;
-  }
-  const doses = serialDilution(cfg.top_concentration, cfg.dilution_factor > 1 ? cfg.dilution_factor : 2, series.length);
-  const points = series.map((w, i) => ({ dose: doses[i], response: w.value as number, well: w.well }));
-  const fit = fit4PL(points);
-  if (!fit) return <p className="text-xs text-muted-foreground">Couldn't fit a dose-response curve to this data.</p>;
-
-  return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs font-mono">
-        <span><span className="text-muted-foreground">IC50/EC50: </span><span className="font-semibold text-primary">{fmtConc(fit.ic50)} {cfg.unit}</span>{!fit.ic50InRange && <span className="text-yellow-600"> (outside tested range)</span>}</span>
-        <span><span className="text-muted-foreground">Hill: </span>{fit.hill.toFixed(2)}</span>
-        <span className={fit.r2 >= 0.95 ? "text-emerald-500" : fit.r2 >= 0.8 ? "text-yellow-500" : "text-destructive"}>R² = {fit.r2.toFixed(3)}</span>
-      </div>
-      <div className="h-48 w-full">
-        <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart margin={{ top: 8, right: 12, bottom: 18, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-            <XAxis
-              type="number"
-              dataKey="dose"
-              scale="log"
-              domain={[fit.curve[0].dose, fit.curve[fit.curve.length - 1].dose]}
-              allowDataOverflow
-              tickFormatter={fmtConc}
-              tick={{ fontSize: 10 }}
-              stroke="currentColor"
-              className="text-muted-foreground"
-            />
-            <YAxis type="number" dataKey="response" tick={{ fontSize: 10 }} stroke="currentColor" className="text-muted-foreground" width={44} />
-            <Tooltip
-              formatter={(v: number) => [typeof v === "number" ? v.toFixed(2) : v, "signal"]}
-              labelFormatter={(l: number) => `${fmtConc(l)} ${cfg.unit}`}
-              {...tooltipStyle}
-            />
-            <Line data={fit.curve} dataKey="response" stroke="hsl(var(--primary))" dot={false} strokeWidth={2} isAnimationActive={false} />
-            <Scatter data={points} dataKey="response" fill="hsl(var(--primary))" isAnimationActive={false} />
-          </ComposedChart>
-        </ResponsiveContainer>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Focused "ask for a computed answer" box — e.g. dose-response/IC50 questions
- * that used to require a dedicated curve-fitting widget with manual row/column/
- * concentration config. Uses a dedicated non-streaming endpoint (not the
- * general chat) so the AI can return a chart TYPE + config alongside its
- * answer — but it persists into the SAME conversation as the "Ask about this
- * data" chat below, so both surfaces show one continuous history. The AI never
- * invents chart data: every plotted number is computed here from the real wells.
- */
-function QuantifyBox({ experimentId, conversationId, wells }: { experimentId: number; conversationId: number; wells: PlateWell[] }) {
-  const queryClient = useQueryClient();
-  const [question, setQuestion] = useState("");
-  const [askedQuestion, setAskedQuestion] = useState("");
-  const [answer, setAnswer] = useState("");
-  const [chart, setChart] = useState<QuantifyChartSpec | null>(null);
-  const [isAsking, setIsAsking] = useState(false);
-  const [askError, setAskError] = useState<string | null>(null);
-
-  const ask = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const q = question.trim();
-    if (!q || isAsking) return;
-
-    setIsAsking(true);
-    setAskedQuestion(q);
-    setAnswer("");
-    setChart(null);
-    setAskError(null);
-    setQuestion("");
-
-    try {
-      const response = await apiFetch(`/api/experiments/${experimentId}/quantify`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q }),
-      });
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({ error: "Request failed" }));
-        throw new Error(err.error ?? "Request failed");
-      }
-      const data = await response.json();
-      setAnswer(data.answer ?? "");
-      setChart(data.chart ?? null);
-    } catch (err) {
-      setAskError(err instanceof Error ? err.message : "Couldn't reach the AI. Try again.");
-    } finally {
-      setIsAsking(false);
-      queryClient.invalidateQueries({ queryKey: getListAiMessagesQueryKey(conversationId) });
-    }
-  };
-
-  return (
-    <Card className="lab-panel rounded-[1.6rem] border-primary/20 bg-primary/5">
-      <CardHeader className="pb-3">
-        <CardTitle className="text-sm flex items-center gap-2">
-          <MessageSquare className="h-4 w-4 text-primary" />
-          Quantify anything
-        </CardTitle>
-        <CardDescription>
-          Ask for a specific computed answer or chart — e.g. "what's the IC50 for this dose series in column 1, top conc 100µM, 3-fold dilution?" or "show me the mean signal by row." Grounded in this experiment's protocol and data.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <form onSubmit={ask} className="flex gap-2">
-          <Textarea
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            placeholder="e.g. what's the IC50 for this run?"
-            rows={1}
-            className="text-sm min-h-9 resize-none"
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                ask(e as unknown as React.FormEvent);
-              }
-            }}
-          />
-          <Button type="submit" size="sm" disabled={isAsking || !question.trim()} className="gap-1.5 flex-shrink-0">
-            {isAsking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MessageSquare className="h-3.5 w-3.5" />}
-            Ask
-          </Button>
-        </form>
-
-        {askError && (
-          <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-            <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-            {askError}
-          </div>
-        )}
-
-        {isAsking && !answer && (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Working it out…
-          </div>
-        )}
-
-        {answer && (
-          <div className="rounded-lg border border-border bg-background/60 p-3 space-y-3">
-            <div>
-              <div className="text-xs font-medium text-muted-foreground mb-1">{askedQuestion}</div>
-              <div className="prose prose-sm dark:prose-invert max-w-none break-words">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{answer}</ReactMarkdown>
-              </div>
-            </div>
-            {chart && (
-              <div className="pt-2 border-t border-border">
-                <div className="text-xs font-medium text-muted-foreground mb-2">{chart.title}</div>
-                <QuantifyChart spec={chart} wells={wells} />
-              </div>
-            )}
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
 export function DataAnalysisPage() {
   const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -694,22 +449,8 @@ export function DataAnalysisPage() {
   const hasPlateSummary = hasGraphableData(parsedSelectedSummary);
   const isPlate96 = parsedSelectedSummary?.kind === "plate96";
 
-  // Read-only: the same control-well markings the scientist made on the
-  // experiment page (localStorage key `layout:${id}`), so the heatmap/dose-
-  // response here stay visually consistent without a second editor to maintain.
-  const [wellRoles, setWellRoles] = useState<Record<string, WellRole>>({});
-  useEffect(() => {
-    if (!selectedId) { setWellRoles({}); return; }
-    try {
-      const raw = localStorage.getItem(`layout:${selectedId}`);
-      setWellRoles(raw ? JSON.parse(raw) || {} : {});
-    } catch {
-      setWellRoles({});
-    }
-  }, [selectedId]);
-  const controlSummary = isPlate96 && parsedSelectedSummary && "wells" in parsedSelectedSummary && Array.isArray(parsedSelectedSummary.wells)
-    ? buildControlSummary(parsedSelectedSummary.wells, wellRoles)
-    : undefined;
+  const plateResults = readPlateResults(selectedExp?.plate_results_json);
+  const wellRoles = plateResults?.layout?.roles;
 
   // A previously-generated report is persisted server-side — show it immediately
   // on selecting an experiment rather than requiring the user to regenerate.
@@ -720,12 +461,12 @@ export function DataAnalysisPage() {
     if (!selectedId || !selectedExp) return;
     if (seededForId.current === selectedId) return;
     seededForId.current = selectedId;
-    if (selectedExp.data_analysis_report) {
+    if (selectedExp.data_analysis_report && (!isPlate96 || plateResults)) {
       setReport(selectedExp.data_analysis_report);
       setHasReport(true);
       setReportRequestId(selectedExp.data_analysis_request_id ?? null);
     }
-  }, [selectedId, selectedExp]);
+  }, [selectedId, selectedExp, isPlate96, plateResults]);
 
   // Pop up the notes/quantify prompt the moment an unanalyzed experiment is
   // selected — NOT gated on data existing. The AI already has protocol/notes
@@ -734,11 +475,11 @@ export function DataAnalysisPage() {
   useEffect(() => {
     if (!selectedId || !selectedExp) return;
     if (promptedForId.current === selectedId) return;
-    if (!selectedExp.data_analysis_report) {
+    if (!isPlate96 && !selectedExp.data_analysis_report) {
       promptedForId.current = selectedId;
       setShowFocusModal(true);
     }
-  }, [selectedId, selectedExp]);
+  }, [selectedId, selectedExp, isPlate96]);
 
   const generateReport = async () => {
     if (!selectedId) return;
@@ -760,7 +501,6 @@ export function DataAnalysisPage() {
           ...(notes.trim() ? { notes: notes.trim() } : {}),
           ...(quantifyRequest.trim() ? { quantify_request: quantifyRequest.trim() } : {}),
           ...(hasReport && refineNote.trim() ? { refine_note: refineNote.trim() } : {}),
-          ...(controlSummary ? { control_summary: controlSummary } : {}),
         }),
         signal: controller.signal,
       });
@@ -976,7 +716,12 @@ export function DataAnalysisPage() {
               />
             ) : (
               <>
-                <QuantitativeSummaryPanel id={selectedId} />
+                {isPlate96 ? (
+                  <>
+                    {!plateResults && <Link href={`/experiments/${selectedId}`} className="text-sm font-medium text-primary underline">Confirm the plate layout</Link>}
+                    <PlateRunResults results={plateResults} />
+                  </>
+                ) : <QuantitativeSummaryPanel id={selectedId} />}
 
                 {isPlate96 && parsedSelectedSummary && "wells" in parsedSelectedSummary && Array.isArray(parsedSelectedSummary.wells) && (
                   <Card className="lab-panel overflow-hidden rounded-[1.6rem] border-primary/20 dark:bg-card/80">
@@ -997,17 +742,11 @@ export function DataAnalysisPage() {
                   </Card>
                 )}
 
-                {selectedId && selectedExp?.conversation_id && parsedSelectedSummary && "wells" in parsedSelectedSummary && Array.isArray(parsedSelectedSummary.wells) && (
-                  <QuantifyBox
-                    experimentId={selectedId}
-                    conversationId={selectedExp.conversation_id}
-                    wells={parsedSelectedSummary.wells}
-                  />
-                )}
+                {isPlate96 && <PlateQuestions key={selectedExp?.plate_results_json ?? selectedId} id={selectedId} />}
               </>
             )}
 
-            {selectedExp?.raw_data_json && (
+            {selectedExp?.raw_data_json && (!isPlate96 || plateResults) && (
             <div className="pt-2">
               <Card className="lab-panel overflow-hidden rounded-[1.8rem] border-primary/25 dark:bg-card/80">
                 <CardHeader className="pb-3 border-b border-border">
@@ -1033,6 +772,7 @@ export function DataAnalysisPage() {
                               rawData: parsedSelectedSummary?.kind === "plate96" ? parsedSelectedSummary : null,
                               suggestions: [],
                               detailedReport: report,
+                              plateResults,
                             })}
                             data-feedback="export"
                             data-feedback-message="Preparing the AI analysis report"
@@ -1128,12 +868,12 @@ export function DataAnalysisPage() {
                   {(report || isStreaming) && (
                     <div className="space-y-4">
                       <div className="prose prose-sm dark:prose-invert max-w-none break-words">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{report}</ReactMarkdown>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{report.replace(/(?:\\r)?\\n/g, "\n")}</ReactMarkdown>
                         {isStreaming && (
                           <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-1 rounded-sm" />
                         )}
                       </div>
-                      {!isStreaming && <ImproveAiDialog requestId={reportRequestId} output={report} taskLabel="data-analysis report" compact />}
+                      {!isPlate96 && !isStreaming && <ImproveAiDialog requestId={reportRequestId} output={report} taskLabel="data-analysis report" compact />}
                     </div>
                   )}
                 </CardContent>
@@ -1144,7 +884,7 @@ export function DataAnalysisPage() {
             {/* Chat — same per-experiment conversation as the experiment page, so
                 design/run discussion and follow-up questions about this report
                 live in one continuous thread. */}
-            {selectedExp?.conversation_id && (
+            {!isPlate96 && selectedExp?.conversation_id && (
               <div className="space-y-4 pt-4">
                 <LabSectionHeader
                   eyebrow="Interrogate the evidence"

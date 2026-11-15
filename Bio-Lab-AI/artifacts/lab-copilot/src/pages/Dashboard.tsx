@@ -1,3 +1,5 @@
+import { AttachDataCard } from "@/components/experiment/AttachDataCard";
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { Link, useLocation } from "wouter";
 import { format, parseISO } from "date-fns";
@@ -29,7 +31,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { useGetDashboard, getGetDashboardQueryKey } from "@workspace/api-client-react";
+import { useGetDashboard, getGetDashboardQueryKey, getListExperimentsQueryKey } from "@workspace/api-client-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/ui/StatusBadge";
@@ -211,6 +213,21 @@ function OnboardingEmptyState({ firstName }: { firstName: string }) {
 }
 
 export function Dashboard() {
+  const [, navigate] = useLocation();
+  const queryClient = useQueryClient();
+  return (
+    <>
+      <div className="lab-page"><AttachDataCard onAttached={(id) => {
+        void queryClient.invalidateQueries({ queryKey: getGetDashboardQueryKey() });
+        void queryClient.invalidateQueries({ queryKey: getListExperimentsQueryKey() });
+        navigate(`/experiments/${id}`);
+      }} /></div>
+      <DashboardOverview />
+    </>
+  );
+}
+
+function DashboardOverview() {
   const { data: dashboard, isLoading, refetch } = useGetDashboard({
     query: { queryKey: getGetDashboardQueryKey() },
   });

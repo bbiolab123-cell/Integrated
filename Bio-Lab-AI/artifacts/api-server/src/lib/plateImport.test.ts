@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { parseDelimitedRows, parsePlateRows } from "./plateImport";
+import { parseDelimitedRows, parsePlateRows } from "@workspace/plate-analysis";
 
 const matrix = Array.from({ length: 8 }, (_, row) => [
   String.fromCharCode(65 + row),

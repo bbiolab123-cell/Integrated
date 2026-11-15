@@ -74,6 +74,121 @@ export const CreateExperimentBody = zod.object({
 });
 
 /**
+ * @summary Create a run from an uploaded 96-well plate
+ */
+export const uploadPlateRunBodyPlateSelectionStartRowMin = 0;
+
+export const uploadPlateRunBodyPlateSelectionStartColumnMin = 0;
+
+export const uploadPlateRunBodyPlateSelectionTransposeDefault = false;
+
+export const UploadPlateRunBody = zod.object({
+  file_name: zod.string(),
+  file_content_b64: zod.string(),
+  sheet_name: zod.string().optional(),
+  plate_selection: zod
+    .object({
+      start_row: zod.number().min(uploadPlateRunBodyPlateSelectionStartRowMin),
+      start_column: zod
+        .number()
+        .min(uploadPlateRunBodyPlateSelectionStartColumnMin),
+      transpose: zod
+        .boolean()
+        .default(uploadPlateRunBodyPlateSelectionTransposeDefault),
+    })
+    .optional(),
+});
+
+/**
+ * @summary Confirm a run layout and store its calculated results
+ */
+export const ConfirmPlateLayoutParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const confirmPlateLayoutBodyLayoutSeriesFirstMax = 12;
+
+export const confirmPlateLayoutBodyLayoutSeriesLastMax = 12;
+
+export const ConfirmPlateLayoutBody = zod.object({
+  updatedAt: zod.coerce.date(),
+  layout: zod.object({
+    roles: zod
+      .record(zod.string(), zod.enum(["pos", "neg", "blank", "sample"]))
+      .describe(
+        "Well roles keyed by well ID. Pos is untreated or vehicle and neg is a kill control.",
+      ),
+    series: zod
+      .object({
+        axis: zod.enum(["columns", "rows"]),
+        first: zod
+          .number()
+          .min(1)
+          .max(confirmPlateLayoutBodyLayoutSeriesFirstMax),
+        last: zod
+          .number()
+          .min(1)
+          .max(confirmPlateLayoutBodyLayoutSeriesLastMax),
+        topAt: zod.enum(["first", "last"]),
+        topConcentration: zod.number().nullable(),
+        dilutionFactor: zod.number().nullable(),
+        unit: zod
+          .enum(["M", "mM", "µM", "nM", "pM", "mg/mL", "µg/mL", "ng/mL"])
+          .nullable(),
+      })
+      .nullable(),
+  }),
+});
+
+export const ConfirmPlateLayoutResponse = zod.object({
+  id: zod.number(),
+  name: zod.string(),
+  date: zod.string(),
+  assay_type: zod.string(),
+  instrument: zod.string(),
+  notes: zod.string().nullish(),
+  status: zod.enum([
+    "designing",
+    "ready",
+    "running",
+    "success",
+    "failed",
+    "unknown",
+    "in_progress",
+  ]),
+  protocol_json: zod
+    .string()
+    .nullish()
+    .describe(
+      "Structured protocol (objective, materials, controls, steps, review notes) as JSON",
+    ),
+  file_name: zod.string().nullish(),
+  raw_data_json: zod.string().nullish(),
+  plate_results_json: zod
+    .string()
+    .nullish()
+    .describe(
+      "Versioned computed plate results and confirmed plate layout as JSON.",
+    ),
+  control_summary_json: zod.string().nullish(),
+  ai_summary: zod.string().nullish(),
+  ai_summary_request_id: zod.string().nullish(),
+  ai_next_experiments_json: zod.string().nullish(),
+  data_analysis_report: zod
+    .string()
+    .nullish()
+    .describe(
+      "Persisted long-form Data Analysis report (markdown) from POST \/:id\/data-analysis",
+    ),
+  data_analysis_request_id: zod.string().nullish(),
+  protocol_ai_request_id: zod.string().nullish(),
+  conversation_id: zod.number().optional(),
+  request_id: zod.string().uuid().nullish(),
+  created_at: zod.coerce.date(),
+  updated_at: zod.coerce.date(),
+});
+
+/**
  * @summary Get dashboard statistics
  */
 export const GetDashboardResponse = zod.object({
@@ -143,6 +258,12 @@ export const GetExperimentResponse = zod.object({
     ),
   file_name: zod.string().nullish(),
   raw_data_json: zod.string().nullish(),
+  plate_results_json: zod
+    .string()
+    .nullish()
+    .describe(
+      "Versioned computed plate results and confirmed plate layout as JSON.",
+    ),
   control_summary_json: zod.string().nullish(),
   ai_summary: zod.string().nullish(),
   ai_summary_request_id: zod.string().nullish(),
@@ -211,6 +332,12 @@ export const UpdateExperimentResponse = zod.object({
     ),
   file_name: zod.string().nullish(),
   raw_data_json: zod.string().nullish(),
+  plate_results_json: zod
+    .string()
+    .nullish()
+    .describe(
+      "Versioned computed plate results and confirmed plate layout as JSON.",
+    ),
   control_summary_json: zod.string().nullish(),
   ai_summary: zod.string().nullish(),
   ai_summary_request_id: zod.string().nullish(),
@@ -335,6 +462,12 @@ export const AttachExperimentDataResponse = zod.object({
     ),
   file_name: zod.string().nullish(),
   raw_data_json: zod.string().nullish(),
+  plate_results_json: zod
+    .string()
+    .nullish()
+    .describe(
+      "Versioned computed plate results and confirmed plate layout as JSON.",
+    ),
   control_summary_json: zod.string().nullish(),
   ai_summary: zod.string().nullish(),
   ai_summary_request_id: zod.string().nullish(),

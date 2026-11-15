@@ -113,7 +113,7 @@ export const PlateHeatmap = forwardRef<HTMLDivElement, PlateHeatmapProps>(functi
   const getWellStyle = (w: WellData): React.CSSProperties => {
     const role = roles?.[w.well];
     const roleBorder = role ? `2px solid ${ROLE_COLOR[role]}` : null;
-    if (w.value === null || w.status === "blank") {
+    if (w.value === null) {
       return {
         backgroundColor: "hsl(var(--muted))",
         opacity: 0.4,
@@ -144,6 +144,7 @@ export const PlateHeatmap = forwardRef<HTMLDivElement, PlateHeatmapProps>(functi
     };
   };
 
+  const Cell = editMode ? "button" : "div";
   const cellSize = compact ? "w-7 h-7 text-[9px]" : "w-8 h-8 text-[10px]";
   const labelSize = compact ? "text-[9px]" : "text-[10px]";
 
@@ -153,24 +154,28 @@ export const PlateHeatmap = forwardRef<HTMLDivElement, PlateHeatmapProps>(functi
         <div className="inline-block">
           <div className="flex items-center gap-0.5 mb-1 ml-6">
             {COLS.map((c) => (
-              <div
+              <Cell
                 key={c}
+                type={editMode ? "button" : undefined}
+                aria-label={editMode ? `Column ${c}` : undefined}
                 onClick={editMode ? () => onAssignCol?.(c) : undefined}
                 className={`${compact ? "w-7" : "w-8"} text-center font-mono ${labelSize} text-muted-foreground ${editMode ? "cursor-pointer rounded hover:text-primary hover:bg-primary/10" : ""}`}
               >
                 {c}
-              </div>
+              </Cell>
             ))}
           </div>
 
           {ROWS.map((r) => (
             <div key={r} className="flex items-center gap-0.5 mb-0.5">
-              <div
+              <Cell
+                type={editMode ? "button" : undefined}
+                aria-label={editMode ? `Row ${r}` : undefined}
                 onClick={editMode ? () => onAssignRow?.(r) : undefined}
                 className={`w-5 text-right font-mono ${labelSize} text-muted-foreground mr-1 flex-shrink-0 ${editMode ? "cursor-pointer rounded hover:text-primary hover:bg-primary/10" : ""}`}
               >
                 {r}
-              </div>
+              </Cell>
               {COLS.map((c) => {
                 const wellId = `${r}${c}`;
                 const well = wellMap.get(wellId);
@@ -184,8 +189,10 @@ export const PlateHeatmap = forwardRef<HTMLDivElement, PlateHeatmapProps>(functi
                 }
                 const role = roles?.[wellId];
                 return (
-                  <div
+                  <Cell
                     key={wellId}
+                    type={editMode ? "button" : undefined}
+                    aria-label={editMode ? `Well ${wellId}` : undefined}
                     className={`${cellSize} rounded-full flex items-center justify-center flex-shrink-0 cursor-pointer transition-transform hover:scale-110 hover:z-10 relative`}
                     style={getWellStyle(well)}
                     onClick={editMode ? () => onAssignWell?.(wellId) : undefined}
@@ -209,7 +216,7 @@ export const PlateHeatmap = forwardRef<HTMLDivElement, PlateHeatmapProps>(functi
                         {ROLE_SHORT[role]}
                       </span>
                     )}
-                  </div>
+                  </Cell>
                 );
               })}
             </div>

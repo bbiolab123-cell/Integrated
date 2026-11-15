@@ -1,3 +1,5 @@
+import { formatPlateNumber, potencyAnswer, type PlateResults } from "@workspace/plate-analysis";
+
 // printExperimentReport.ts
 //
 // Dependency-free client-side PDF export for an experiment.
@@ -174,8 +176,9 @@ export function printExperimentReport(args: {
   /** The full markdown Data Analysis report (from POST /:id/data-analysis), distinct
    *  from the shorter experiment.ai_summary — included as its own section when present. */
   detailedReport?: string;
+  plateResults?: PlateResults | null;
 }): void {
-  const { experiment, rawData, suggestions, detailedReport } = args;
+  const { experiment, rawData, suggestions, detailedReport, plateResults } = args;
   const isPlate = rawData?._type === "plate96" && Array.isArray(rawData?.read_matrix);
   const stats = rawData?.stats;
   const meta = rawData?.metadata;
@@ -192,7 +195,7 @@ export function printExperimentReport(args: {
       ? `<div class="stats">
           ${statCard("Mean", stats.mean !== null ? stats.mean.toFixed(3) : "—")}
           ${statCard("SD", stats.sd !== null ? stats.sd.toFixed(3) : "—")}
-          ${statCard("CV %", stats.cv_pct !== null ? stats.cv_pct.toFixed(1) : "—")}
+          ${plateResults?.layout?.series ? "" : statCard("Plate CV %", stats.cv_pct !== null ? stats.cv_pct.toFixed(1) : "—")}
           ${statCard("Min", stats.min !== null ? stats.min.toFixed(3) : "—")}
           ${statCard("Max", stats.max !== null ? stats.max.toFixed(3) : "—")}
           ${statCard("Wells read", String(stats.well_count))}
@@ -298,8 +301,22 @@ export function printExperimentReport(args: {
       : ""
   }
 
+  ${isPlate ? `<section class="block">
+    <h2>Calculated plate results</h2>
+    <p>${esc(potencyAnswer(plateResults ?? null))}</p>
+    ${plateResults?.layout ? `<p>Confirmed layout: vehicle ${esc(plateResults.qc.vehicle.wells.join(", ") || "none")};
+      blank ${esc(plateResults.qc.blank.wells.join(", ") || "none")};
+      kill control ${esc(plateResults.qc.kill.wells.join(", ") || "none")}.</p>` : ""}
+    ${plateResults?.fit ? `<p>Response = 100 × (well − mean blank) / (mean vehicle − mean blank).
+      The four-parameter logistic uses the mean response at each concentration.
+      R² ${esc(formatPlateNumber(plateResults.fit.r2))}.
+      Hill slope magnitude ${esc(formatPlateNumber(plateResults.fit.hill))}.</p>` : ""}
+    <p>${plateResults?.qc.zPrime == null ? "Z′ needs replicate vehicle and kill controls."
+      : `Z′ ${esc(formatPlateNumber(plateResults.qc.zPrime))}. Controls: n=${plateResults.qc.vehicle.count} vehicle, n=${plateResults.qc.kill.count} kill.`}</p>
+    <p>Z′ = 1 − 3 × (vehicle SD + kill-control SD) / |mean vehicle − mean kill control|.</p>
+  </section>` : ""}
   ${
-    detailedReport
+    isPlate && !plateResults?.layout ? "" : detailedReport
       ? `<section class="block"><h2>Detailed Data Analysis Report</h2><div class="prose">${mdLite(
           detailedReport,
         )}</div></section>`

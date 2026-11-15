@@ -6,17 +6,17 @@ const sections = [
   {
     icon: Database,
     title: "What Bioalyzer keeps",
-    body: "Your account identity, experiment records, protocols, uploaded files after parsing, plate layouts, comments, tasks, chat messages, AI answers, and feedback. The service also keeps basic request logs such as timestamps, request IDs, status codes, and account IDs so failures and abuse can be investigated.",
+    body: "Your account identity, experiment records, protocols, parsed plate measurements, plate layouts, comments, tasks, chat messages, AI answers, and feedback. The service also keeps basic request logs such as timestamps, request IDs, status codes, and account IDs so failures and abuse can be investigated.",
   },
   {
     icon: Server,
     title: "Where your data goes",
-    body: "Bioalyzer stores workspace data in its configured database. Clerk handles sign-in. When you deliberately use an AI feature, the relevant experiment context and your prompt are sent to Cloudflare Workers AI to generate the answer. Ordinary heatmaps, CV%, Z′, and IC50 calculations run without an AI call.",
+    body: "Bioalyzer stores workspace data in its configured database. Clerk handles sign-in. When you deliberately use an AI feature, the relevant experiment context and your prompt are sent to Cloudflare Workers AI to generate the answer. Plate readings send calculated results and your question to the AI provider. Heatmaps, quality checks, and dose-response fits run without an AI call.",
   },
   {
     icon: ShieldCheck,
     title: "AI improvement data",
-    body: "AI inputs, outputs, corrections, and ratings may be stored for review. They are not automatically released into a training set: an example must pass the app's approval and privacy checks before an administrator can export it for private model improvement. Do not enter patient identifiers, regulated health information, or secrets unless your deployment owner has explicitly approved that use.",
+    body: "Plate readings are stored on the run and excluded from the AI feedback dataset. Other AI inputs, outputs, corrections, and ratings may be stored for review. They are not automatically released into a training set: an example must pass the app's approval and privacy checks before an administrator can export it for private model improvement. Do not enter patient identifiers, regulated health information, or secrets unless your deployment owner has explicitly approved that use.",
   },
   {
     icon: LockKeyhole,
@@ -46,7 +46,7 @@ export function PrivacyPage() {
         <p className="mt-6 max-w-3xl text-base leading-8 text-white/60">
           Bioalyzer is a scientific workspace, not a medical record system. This page explains the data flow in practical terms. It is not a promise of HIPAA, GDPR, GLP, or other regulatory compliance.
         </p>
-        <p className="mt-3 font-mono text-xs text-white/35">Last updated August 31, 2026</p>
+        <p className="mt-3 font-mono text-xs text-white/35">Last updated November 14, 2026</p>
 
         <div className="mt-12 grid gap-4 md:grid-cols-2">
           {sections.map(({ icon: Icon, title, body }) => (
@@ -61,7 +61,7 @@ export function PrivacyPage() {
         <section className="mt-5 rounded-2xl border border-amber-200/15 bg-amber-200/[0.05] p-6">
           <h2 className="text-lg font-semibold text-amber-100">What the product does not do</h2>
           <p className="mt-3 text-sm leading-7 text-white/55">
-            The application contains no advertising or built-in data-sale feature. It does not contact the AI provider when you upload a plate, view a heatmap, calculate CV% or Z′, or fit a local dose-response curve. AI calls happen only when you use an AI-labeled action.
+            The application contains no advertising or built-in data-sale feature. It does not contact the AI provider when you upload a plate, view a heatmap, calculate CV% or Z′, or fit a dose-response curve. AI calls happen only when you use an AI-labeled action.
           </p>
         </section>
 

@@ -191,6 +191,9 @@ importers:
       '@workspace/integrations-ai':
         specifier: workspace:*
         version: link:../../lib/integrations-ai
+      '@workspace/plate-analysis':
+        specifier: workspace:*
+        version: link:../../lib/plate-analysis
       adm-zip:
         specifier: ^0.6.0
         version: 0.6.0
@@ -397,6 +400,9 @@ importers:
       '@workspace/api-client-react':
         specifier: workspace:*
         version: link:../../lib/api-client-react
+      '@workspace/plate-analysis':
+        specifier: workspace:*
+        version: link:../../lib/plate-analysis
       class-variance-authority:
         specifier: 'catalog:'
         version: 0.7.1
@@ -528,6 +534,8 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 25.3.5
+
+  lib/plate-analysis: {}
 
   scripts:
     dependencies:

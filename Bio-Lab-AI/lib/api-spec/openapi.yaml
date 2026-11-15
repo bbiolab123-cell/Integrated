@@ -80,6 +80,108 @@ paths:
               schema:
                 $ref: "#/components/schemas/ApiError"
 
+  /experiments/plate-run:
+    post:
+      operationId: uploadPlateRun
+      tags: [experiments]
+      summary: Create a run from an uploaded 96-well plate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [file_name, file_content_b64]
+              properties:
+                file_name:
+                  type: string
+                file_content_b64:
+                  type: string
+                sheet_name:
+                  type: string
+                plate_selection:
+                  $ref: "#/components/schemas/PlateSelection"
+      responses:
+        "201":
+          description: Run created. Confirm its scientific layout to calculate control metrics and potency.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Experiment"
+        "422":
+          description: Worksheet choice, grid selection, or a supported export is required.
+
+  /experiments/{id}/plate-layout:
+    put:
+      operationId: confirmPlateLayout
+      tags: [experiments]
+      summary: Confirm a run layout and store its calculated results
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [updatedAt, layout]
+              properties:
+                updatedAt:
+                  type: string
+                  format: date-time
+                layout:
+                  type: object
+                  required: [roles, series]
+                  properties:
+                    roles:
+                      type: object
+                      additionalProperties:
+                        type: string
+                        enum: [pos, neg, blank, sample]
+                      description: Well roles keyed by well ID. Pos is untreated or vehicle and neg is a kill control.
+                    series:
+                      type: object
+                      nullable: true
+                      required: [axis, first, last, topAt, topConcentration, dilutionFactor, unit]
+                      properties:
+                        axis:
+                          type: string
+                          enum: [columns, rows]
+                        first:
+                          type: integer
+                          minimum: 1
+                          maximum: 12
+                        last:
+                          type: integer
+                          minimum: 1
+                          maximum: 12
+                        topAt:
+                          type: string
+                          enum: [first, last]
+                        topConcentration:
+                          type: number
+                          nullable: true
+                        dilutionFactor:
+                          type: number
+                          nullable: true
+                        unit:
+                          type: string
+                          nullable: true
+                          enum: [M, mM, µM, nM, pM, mg/mL, µg/mL, ng/mL]
+      responses:
+        "200":
+          description: Updated experiment and versioned results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Experiment"
+        "409":
+          description: The run changed. Reload its source plate and review the layout.
+
   /experiments/dashboard:
     get:
       operationId: getDashboard
@@ -518,6 +620,10 @@ components:
         raw_data_json:
           type: string
           nullable: true
+        plate_results_json:
+          type: string
+          nullable: true
+          description: Versioned computed plate results and confirmed plate layout as JSON.
         control_summary_json:
           type: string
           nullable: true

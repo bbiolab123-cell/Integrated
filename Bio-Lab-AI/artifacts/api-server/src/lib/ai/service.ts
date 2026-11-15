@@ -27,6 +27,7 @@ export type AiTextRequest = AiCallContext & {
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   maxTokens?: number;
   temperature?: number;
+  recordForFeedback?: boolean;
 };
 
 export type AiTextResult = {
@@ -288,7 +289,7 @@ export async function generateAiJson<T>(request: AiTextRequest, schema: ZodType<
     try {
       const parsed = schema.safeParse(extractJson(lastText, retryContext));
       if (parsed.success) {
-        await recordGeneration(request, requestId, messages, JSON.stringify(parsed.data));
+        if (request.recordForFeedback !== false) await recordGeneration(request, requestId, messages, JSON.stringify(parsed.data));
         return { text: JSON.stringify(parsed.data), data: parsed.data, requestId, model: result.model };
       }
       validationIssueCount = parsed.error.issues.length;

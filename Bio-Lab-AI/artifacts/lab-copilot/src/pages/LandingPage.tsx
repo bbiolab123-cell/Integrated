@@ -21,17 +21,6 @@ import {
 import { AmbientBackdrop } from "@/components/layout/AmbientBackdrop";
 import { HoverLift, Reveal, riseItem, staggerContainer } from "@/components/motion/MotionPrimitives";
 
-const plateWells = Array.from({ length: 96 }, (_, index) => {
-  const col = index % 12;
-  const row = Math.floor(index / 12);
-  const edge = row === 0 || row === 7 || col === 0 || col === 11;
-  const active = [14, 15, 26, 27, 39, 51, 63, 74, 75, 86].includes(index);
-  const warn = [21, 34, 58, 70].includes(index);
-  return { index, edge, active, warn };
-});
-
-const signals = [42, 64, 38, 76, 51, 88, 57, 69, 45, 81, 62, 93];
-
 const marqueeItems = [
   "Synergy H1 parsing",
   "Project-wide memory",
@@ -96,111 +85,6 @@ const workflow = [
     copy: "Turn a finding into a task, a revised protocol, or the next experiment without losing rationale.",
   },
 ];
-
-function AssayPreview() {
-  return (
-    <motion.div
-      initial={{ opacity: 0, x: 30, rotateY: -4 }}
-      animate={{ opacity: 1, x: 0, rotateY: 0 }}
-      transition={{ delay: 0.28, duration: 0.9, ease: [0.16, 1, 0.3, 1] }}
-      className="relative mx-auto w-full max-w-[590px] lg:ml-auto"
-      style={{ perspective: 1200 }}
-    >
-      <motion.div
-        className="absolute -left-5 top-16 z-20 hidden rounded-xl border border-emerald-300/20 bg-slate-950/85 p-3 shadow-2xl backdrop-blur-xl sm:block"
-        animate={{ y: [0, -8, 0] }}
-        transition={{ duration: 5.2, repeat: Infinity, ease: "easeInOut" }}
-      >
-        <div className="flex items-center gap-2 text-xs text-emerald-200">
-          <span className="signal-dot h-2 w-2 rounded-full bg-emerald-300" />
-          Controls within range
-        </div>
-      </motion.div>
-
-      <motion.div
-        className="absolute -bottom-7 -right-3 z-20 w-52 rounded-xl border border-cyan-300/20 bg-slate-950/90 p-4 shadow-2xl backdrop-blur-xl sm:w-60"
-        animate={{ y: [0, 7, 0] }}
-        transition={{ duration: 6.2, delay: 0.8, repeat: Infinity, ease: "easeInOut" }}
-      >
-        <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-[0.18em] text-white/45">
-          <span>AI observation</span>
-          <Sparkles className="h-3.5 w-3.5 text-cyan-200" />
-        </div>
-        <p className="text-sm leading-5 text-white/85">Dose response holds. Repeat the mid-range wells before scale-up.</p>
-      </motion.div>
-
-      <div className="premium-ring surface-panel lab-scan rounded-2xl border-white/[0.12] bg-slate-950/[0.78] p-4 text-white shadow-[0_30px_120px_rgba(0,0,0,.52)] backdrop-blur-2xl sm:p-5">
-        <div className="mb-5 flex items-center justify-between">
-          <div>
-            <p className="text-[10px] uppercase tracking-[0.2em] text-white/[0.42]">Live assay review</p>
-            <p className="mt-1 font-semibold">H1 viability · Plate 08</p>
-          </div>
-          <span className="inline-flex items-center gap-2 rounded-full border border-emerald-300/25 bg-emerald-300/10 px-2.5 py-1 text-[11px] font-medium text-emerald-200">
-            <span className="signal-dot h-1.5 w-1.5 rounded-full bg-emerald-300" />
-            Streaming
-          </span>
-        </div>
-
-        <div className="grid grid-cols-12 gap-1 sm:gap-1.5">
-          {plateWells.map((well) => (
-            <motion.span
-              key={well.index}
-              className={`aspect-square rounded-[3px] shadow-[inset_0_1px_rgba(255,255,255,.12)] ${
-                well.warn
-                  ? "bg-amber-300"
-                  : well.active
-                    ? "bg-emerald-300"
-                    : well.edge
-                      ? "bg-cyan-300/[0.25]"
-                      : "bg-cyan-300/55"
-              }`}
-              initial={{ opacity: 0, scale: 0.4 }}
-              animate={{
-                opacity: well.active || well.warn ? [0.74, 1, 0.74] : 0.6,
-                scale: well.active || well.warn ? [1, 1.07, 1] : 1,
-              }}
-              transition={{
-                opacity: { delay: (well.index % 12) * 0.025, duration: 2.8, repeat: Infinity },
-                scale: { delay: (well.index % 12) * 0.025, duration: 2.8, repeat: Infinity },
-              }}
-            />
-          ))}
-        </div>
-
-        <div className="mt-5 grid grid-cols-3 gap-2 sm:gap-3">
-          {[
-            ["Z prime", "0.61", "text-emerald-200"],
-            ["CV", "8.4%", "text-cyan-100"],
-            ["Flagged", "4 wells", "text-amber-200"],
-          ].map(([label, value, color]) => (
-            <div key={label} className="rounded-lg border border-white/10 bg-white/[0.06] p-2.5 sm:p-3">
-              <p className="text-[9px] uppercase tracking-wider text-white/[0.4] sm:text-[10px]">{label}</p>
-              <p className={`mt-1 font-mono text-sm font-semibold sm:text-lg ${color}`}>{value}</p>
-            </div>
-          ))}
-        </div>
-
-        <div className="mt-3 rounded-lg border border-white/10 bg-black/[0.22] p-3">
-          <div className="mb-3 flex items-center justify-between">
-            <span className="text-[11px] text-white/45">Dose response signal</span>
-            <FlaskConical className="h-4 w-4 text-cyan-200" />
-          </div>
-          <div className="flex h-20 items-end gap-1.5 sm:h-24 sm:gap-2">
-            {signals.map((height, index) => (
-              <motion.span
-                key={index}
-                className="flex-1 rounded-t-sm bg-gradient-to-t from-cyan-500/55 to-cyan-200"
-                initial={{ height: "4%" }}
-                animate={{ height: `${height}%` }}
-                transition={{ delay: 0.5 + index * 0.055, duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
-              />
-            ))}
-          </div>
-        </div>
-      </div>
-    </motion.div>
-  );
-}
 
 export function LandingPage() {
   const { scrollYProgress } = useScroll();
@@ -280,29 +164,26 @@ export function LandingPage() {
               </motion.div>
 
               <motion.h1 variants={riseItem} className="text-balance text-[clamp(3.35rem,7vw,6.85rem)] font-semibold leading-[0.91] tracking-[-0.055em]">
-                From raw signal to
-                <span className="block bg-gradient-to-r from-cyan-200 via-white to-emerald-200 bg-clip-text pb-2 text-transparent">
-                  confident science.
-                </span>
+                Plate-reader data to IC50
               </motion.h1>
 
               <motion.p variants={riseItem} className="text-pretty mt-6 max-w-2xl text-base leading-7 text-slate-300 sm:text-lg sm:leading-8">
-                Bioalyzer connects your protocols, instrument data, analysis, and team decisions—then gives you an AI copilot grounded in the work your lab actually did.
+                Upload a plate-reader export to calculate quality checks, normalized responses, and potency from a plate layout you confirm.
               </motion.p>
 
               <motion.div variants={riseItem} className="mt-8 flex flex-wrap items-center gap-3">
                 <Link
-                  href="/sign-up"
+                  href="/sample-plate"
                   className="interactive-lift soft-glow group inline-flex items-center gap-2 rounded-xl bg-cyan-300 px-5 py-3.5 text-sm font-bold text-slate-950 hover:bg-cyan-200"
                   data-feedback="create"
-                  data-feedback-message="Opening a workspace built around your science"
+                  data-feedback-message="Opening the sample plate"
                 >
-                  Open your workspace
+                  Try a sample plate
                   <ArrowRight className="h-4 w-4 transition-transform duration-300 group-hover:translate-x-1" />
                 </Link>
-                <a href="#workflow" className="interactive-lift inline-flex items-center gap-2 rounded-xl border border-white/[0.14] bg-white/[0.06] px-5 py-3.5 text-sm font-semibold text-white backdrop-blur-md hover:border-white/25 hover:bg-white/[0.1]">
-                  See how it works
-                </a>
+                <Link href="/sign-up" className="interactive-lift inline-flex items-center gap-2 rounded-xl border border-white/[0.14] bg-white/[0.06] px-5 py-3.5 text-sm font-semibold text-white backdrop-blur-md hover:border-white/25 hover:bg-white/[0.1]">
+                  Sign up to save runs
+                </Link>
               </motion.div>
 
               <motion.div variants={riseItem} className="mt-9 flex flex-wrap gap-x-5 gap-y-3 text-xs text-slate-300 sm:text-sm">
@@ -315,7 +196,7 @@ export function LandingPage() {
               </motion.div>
             </motion.div>
 
-            <AssayPreview />
+
           </div>
         </section>
 

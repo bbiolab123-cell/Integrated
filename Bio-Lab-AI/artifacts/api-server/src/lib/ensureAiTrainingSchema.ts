@@ -16,6 +16,7 @@ export async function ensureAiTrainingSchema(): Promise<void> {
     await client.query(`
       ALTER TABLE experiments
         ADD COLUMN IF NOT EXISTS control_summary_json text,
+        ADD COLUMN IF NOT EXISTS plate_results_json text,
         ADD COLUMN IF NOT EXISTS ai_summary_request_id text,
         ADD COLUMN IF NOT EXISTS data_analysis_request_id text,
         ADD COLUMN IF NOT EXISTS protocol_ai_request_id text

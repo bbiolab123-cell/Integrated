@@ -61,6 +61,8 @@ export interface Experiment {
   protocol_json?: string | null;
   file_name?: string | null;
   raw_data_json?: string | null;
+  /** Versioned computed plate results and confirmed plate layout as JSON. */
+  plate_results_json?: string | null;
   control_summary_json?: string | null;
   ai_summary?: string | null;
   ai_summary_request_id?: string | null;
@@ -282,6 +284,80 @@ export type ListExperimentsParams = {
   assay_type?: string;
   status?: string;
   search?: string;
+};
+
+export type UploadPlateRunBody = {
+  file_name: string;
+  file_content_b64: string;
+  sheet_name?: string;
+  plate_selection?: PlateSelection;
+};
+
+/**
+ * Well roles keyed by well ID. Pos is untreated or vehicle and neg is a kill control.
+ */
+export type ConfirmPlateLayoutBodyLayoutRoles = {
+  [key: string]: "pos" | "neg" | "blank" | "sample";
+};
+
+export type ConfirmPlateLayoutBodyLayoutSeriesAxis =
+  (typeof ConfirmPlateLayoutBodyLayoutSeriesAxis)[keyof typeof ConfirmPlateLayoutBodyLayoutSeriesAxis];
+
+export const ConfirmPlateLayoutBodyLayoutSeriesAxis = {
+  columns: "columns",
+  rows: "rows",
+} as const;
+
+export type ConfirmPlateLayoutBodyLayoutSeriesTopAt =
+  (typeof ConfirmPlateLayoutBodyLayoutSeriesTopAt)[keyof typeof ConfirmPlateLayoutBodyLayoutSeriesTopAt];
+
+export const ConfirmPlateLayoutBodyLayoutSeriesTopAt = {
+  first: "first",
+  last: "last",
+} as const;
+
+export type ConfirmPlateLayoutBodyLayoutSeriesUnit =
+  | (typeof ConfirmPlateLayoutBodyLayoutSeriesUnit)[keyof typeof ConfirmPlateLayoutBodyLayoutSeriesUnit]
+  | null;
+
+export const ConfirmPlateLayoutBodyLayoutSeriesUnit = {
+  M: "M",
+  mM: "mM",
+  µM: "µM",
+  nM: "nM",
+  pM: "pM",
+  "mg/mL": "mg/mL",
+  "µg/mL": "µg/mL",
+  "ng/mL": "ng/mL",
+} as const;
+
+export type ConfirmPlateLayoutBodyLayoutSeries = {
+  axis: ConfirmPlateLayoutBodyLayoutSeriesAxis;
+  /**
+   * @minimum 1
+   * @maximum 12
+   */
+  first: number;
+  /**
+   * @minimum 1
+   * @maximum 12
+   */
+  last: number;
+  topAt: ConfirmPlateLayoutBodyLayoutSeriesTopAt;
+  topConcentration: number | null;
+  dilutionFactor: number | null;
+  unit: ConfirmPlateLayoutBodyLayoutSeriesUnit;
+} | null;
+
+export type ConfirmPlateLayoutBodyLayout = {
+  /** Well roles keyed by well ID. Pos is untreated or vehicle and neg is a kill control. */
+  roles: ConfirmPlateLayoutBodyLayoutRoles;
+  series: ConfirmPlateLayoutBodyLayoutSeries;
+};
+
+export type ConfirmPlateLayoutBody = {
+  updatedAt: string;
+  layout: ConfirmPlateLayoutBodyLayout;
 };
 
 export type ParsePlateImport200 = { [key: string]: unknown };
