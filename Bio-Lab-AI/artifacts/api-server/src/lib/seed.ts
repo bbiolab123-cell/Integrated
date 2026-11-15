@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { db, experiments } from "@workspace/db";
 import { logger } from "./logger";
-import { parseDelimitedRows, parsePlateRows } from "./plateImport";
+import { parseDelimitedRows, parsePlateRows } from "@workspace/plate-analysis";
 import { isDemoMode } from "./runtimeConfig";
 
 const DEMO_USER_ID = "demo_user";

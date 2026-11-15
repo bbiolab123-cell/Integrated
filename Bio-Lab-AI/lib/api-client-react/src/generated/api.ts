@@ -27,6 +27,7 @@ import type {
   AnalyzeExperimentBody,
   ApiError,
   AttachExperimentDataBody,
+  ConfirmPlateLayoutBody,
   CreateAiConversationBody,
   CreateExperimentBody,
   DashboardStats,
@@ -41,6 +42,7 @@ import type {
   PlateImportPreview,
   SendAiMessageBody,
   UpdateExperimentBody,
+  UploadPlateRunBody,
 } from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
@@ -306,6 +308,179 @@ export const useCreateExperiment = <
   TContext
 > => {
   return useMutation(getCreateExperimentMutationOptions(options));
+};
+
+/**
+ * @summary Create a run from an uploaded 96-well plate
+ */
+export const getUploadPlateRunUrl = () => {
+  return `/api/experiments/plate-run`;
+};
+
+export const uploadPlateRun = async (
+  uploadPlateRunBody: UploadPlateRunBody,
+  options?: RequestInit,
+): Promise<Experiment> => {
+  return customFetch<Experiment>(getUploadPlateRunUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(uploadPlateRunBody),
+  });
+};
+
+export const getUploadPlateRunMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof uploadPlateRun>>,
+    TError,
+    { data: BodyType<UploadPlateRunBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof uploadPlateRun>>,
+  TError,
+  { data: BodyType<UploadPlateRunBody> },
+  TContext
+> => {
+  const mutationKey = ["uploadPlateRun"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof uploadPlateRun>>,
+    { data: BodyType<UploadPlateRunBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return uploadPlateRun(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UploadPlateRunMutationResult = NonNullable<
+  Awaited<ReturnType<typeof uploadPlateRun>>
+>;
+export type UploadPlateRunMutationBody = BodyType<UploadPlateRunBody>;
+export type UploadPlateRunMutationError = ErrorType<void>;
+
+/**
+ * @summary Create a run from an uploaded 96-well plate
+ */
+export const useUploadPlateRun = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof uploadPlateRun>>,
+    TError,
+    { data: BodyType<UploadPlateRunBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof uploadPlateRun>>,
+  TError,
+  { data: BodyType<UploadPlateRunBody> },
+  TContext
+> => {
+  return useMutation(getUploadPlateRunMutationOptions(options));
+};
+
+/**
+ * @summary Confirm a run layout and store its calculated results
+ */
+export const getConfirmPlateLayoutUrl = (id: number) => {
+  return `/api/experiments/${id}/plate-layout`;
+};
+
+export const confirmPlateLayout = async (
+  id: number,
+  confirmPlateLayoutBody: ConfirmPlateLayoutBody,
+  options?: RequestInit,
+): Promise<Experiment> => {
+  return customFetch<Experiment>(getConfirmPlateLayoutUrl(id), {
+    ...options,
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(confirmPlateLayoutBody),
+  });
+};
+
+export const getConfirmPlateLayoutMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof confirmPlateLayout>>,
+    TError,
+    { id: number; data: BodyType<ConfirmPlateLayoutBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof confirmPlateLayout>>,
+  TError,
+  { id: number; data: BodyType<ConfirmPlateLayoutBody> },
+  TContext
+> => {
+  const mutationKey = ["confirmPlateLayout"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof confirmPlateLayout>>,
+    { id: number; data: BodyType<ConfirmPlateLayoutBody> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return confirmPlateLayout(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ConfirmPlateLayoutMutationResult = NonNullable<
+  Awaited<ReturnType<typeof confirmPlateLayout>>
+>;
+export type ConfirmPlateLayoutMutationBody = BodyType<ConfirmPlateLayoutBody>;
+export type ConfirmPlateLayoutMutationError = ErrorType<void>;
+
+/**
+ * @summary Confirm a run layout and store its calculated results
+ */
+export const useConfirmPlateLayout = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof confirmPlateLayout>>,
+    TError,
+    { id: number; data: BodyType<ConfirmPlateLayoutBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof confirmPlateLayout>>,
+  TError,
+  { id: number; data: BodyType<ConfirmPlateLayoutBody> },
+  TContext
+> => {
+  return useMutation(getConfirmPlateLayoutMutationOptions(options));
 };
 
 /**

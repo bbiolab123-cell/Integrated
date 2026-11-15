@@ -24,6 +24,7 @@ export const experiments = pgTable("experiments", {
   // Scientist-defined well roles and deterministic control metrics. Persisted so
   // every AI surface uses the same controls instead of guessing from plate order.
   control_summary_json: text("control_summary_json"),
+  plate_results_json: text("plate_results_json"),
   ai_summary: text("ai_summary"),
   ai_summary_request_id: text("ai_summary_request_id"),
   ai_next_experiments_json: text("ai_next_experiments_json"),

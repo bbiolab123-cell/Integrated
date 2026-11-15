@@ -3,7 +3,6 @@ import { Check, MousePointer2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { ROLE_COLOR, ROLE_LABEL, type WellRole } from "@/lib/plateMetrics";
 
 type Cell = { row: number; column: number };
 
@@ -18,25 +17,19 @@ type Props = {
   filename: string;
   preview: string[][];
   onCancel: () => void;
-  onConfirm: (selection: ManualPlateSelection, roles: Record<string, WellRole>) => void;
+  onConfirm: (selection: ManualPlateSelection) => void;
+  busy: boolean;
 };
 
-const ROLE_ORDER: WellRole[] = ["pos", "neg", "blank", "sample"];
-const ROWS = ["A", "B", "C", "D", "E", "F", "G", "H"];
-
-export function PlateGridPickerDialog({ open, filename, preview, onCancel, onConfirm }: Props) {
+export function PlateGridPickerDialog({ open, filename, preview, onCancel, onConfirm, busy }: Props) {
   const [anchor, setAnchor] = useState<Cell | null>(null);
   const [focus, setFocus] = useState<Cell | null>(null);
   const [dragging, setDragging] = useState(false);
-  const [activeRole, setActiveRole] = useState<WellRole>("pos");
-  const [roles, setRoles] = useState<Record<string, WellRole>>({});
 
   useEffect(() => {
     if (!open) return;
     setAnchor(null);
     setFocus(null);
-    setRoles({});
-    setActiveRole("pos");
   }, [open, filename]);
 
   useEffect(() => {
@@ -63,13 +56,6 @@ export function PlateGridPickerDialog({ open, filename, preview, onCancel, onCon
   const isSelected = (row: number, column: number) => Boolean(bounds
     && row >= bounds.top && row <= bounds.bottom
     && column >= bounds.left && column <= bounds.right);
-
-  const assignRole = (well: string) => setRoles((current) => {
-    const next = { ...current };
-    if (next[well] === activeRole) delete next[well];
-    else next[well] = activeRole;
-    return next;
-  });
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onCancel()}>
@@ -130,71 +116,22 @@ export function PlateGridPickerDialog({ open, filename, preview, onCancel, onCon
             </div>
           </div>
 
-          {validSelection && (
-            <div className="rounded-xl border bg-muted/20 p-3">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium">Tag controls (optional)</p>
-                  <p className="text-xs text-muted-foreground">Choose a role, then click wells. This lets Z′ and control-normalized metrics work immediately.</p>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {ROLE_ORDER.map((role) => (
-                    <Button
-                      key={role}
-                      type="button"
-                      size="sm"
-                      variant={activeRole === role ? "default" : "outline"}
-                      className="h-8 gap-1.5 text-xs"
-                      onClick={() => setActiveRole(role)}
-                    >
-                      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: ROLE_COLOR[role] }} />
-                      {ROLE_LABEL[role]}
-                    </Button>
-                  ))}
-                </div>
-              </div>
-              <div className="mt-3 overflow-auto">
-                <div className="grid min-w-[610px] grid-cols-[28px_repeat(12,minmax(42px,1fr))] gap-1">
-                  <span />
-                  {Array.from({ length: 12 }, (_, column) => <span key={column} className="text-center font-mono text-[10px] text-muted-foreground">{column + 1}</span>)}
-                  {ROWS.flatMap((row) => [
-                    <span key={`${row}-label`} className="flex items-center justify-center font-mono text-[10px] text-muted-foreground">{row}</span>,
-                    ...Array.from({ length: 12 }, (_, column) => {
-                      const well = `${row}${column + 1}`;
-                      const role = roles[well];
-                      return (
-                        <button
-                          key={well}
-                          type="button"
-                          className="h-8 rounded border bg-background text-[10px] transition hover:border-primary"
-                          style={role ? { borderColor: ROLE_COLOR[role], boxShadow: `inset 0 0 0 1px ${ROLE_COLOR[role]}` } : undefined}
-                          title={role ? `${well}: ${ROLE_LABEL[role]}` : well}
-                          onClick={() => assignRole(well)}
-                        >
-                          {well}{role && <span className="ml-1" style={{ color: ROLE_COLOR[role] }}>●</span>}
-                        </button>
-                      );
-                    }),
-                  ])}
-                </div>
-              </div>
-            </div>
-          )}
+
         </div>
 
         <DialogFooter>
           <Button type="button" variant="outline" onClick={onCancel}>Cancel</Button>
           <Button
             type="button"
-            disabled={!validSelection || !bounds}
+            disabled={busy || !validSelection || !bounds}
             className="gap-2"
             onClick={() => bounds && onConfirm({
               start_row: bounds.top,
               start_column: bounds.left,
               transpose: selectedRows === 12,
-            }, roles)}
+            })}
           >
-            <Check className="h-4 w-4" /> Import selected plate
+            <Check className="h-4 w-4" /> {busy ? "Importing…" : "Import selected plate"}
           </Button>
         </DialogFooter>
       </DialogContent>

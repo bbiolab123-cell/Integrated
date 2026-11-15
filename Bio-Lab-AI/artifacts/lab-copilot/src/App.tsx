@@ -19,6 +19,7 @@ import { PrivacyPage } from "@/pages/PrivacyPage";
 
 // Demo application attribution: made by Srivanth Dasu.
 
+const SamplePlate = lazy(() => import("@/pages/SamplePlate").then((module) => ({ default: module.SamplePlate })));
 const Dashboard = lazy(() => import("@/pages/Dashboard").then((module) => ({ default: module.Dashboard })));
 const ExperimentList = lazy(() => import("@/pages/ExperimentList").then((module) => ({ default: module.ExperimentList })));
 const ExperimentDetail = lazy(() => import("@/pages/ExperimentDetail").then((module) => ({ default: module.ExperimentDetail })));
@@ -164,6 +165,7 @@ function AppRoutes({ isAdmin }: { isAdmin: boolean }) {
       <Suspense fallback={<RouteLoading />}><Switch>
         <Route path="/" component={() => <Redirect to="/dashboard" />} />
         <Route path="/landing"><LandingPage /></Route>
+        <Route path="/sample-plate" component={SamplePlate} />
         <Route path="/privacy"><PrivacyPage /></Route>
         <Route path="/dashboard">
           <Layout><AnimatedRoute><Dashboard /></AnimatedRoute></Layout>
@@ -220,7 +222,7 @@ function AppRoutes({ isAdmin }: { isAdmin: boolean }) {
 // ── Demo mode (no Clerk) ──────────────────────────────────────────────────────
 function DemoApp() {
   return (
-    <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false}>
+    <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>
       <TooltipProvider>
         <WouterRouter base={basePath}>
           <QueryClientProvider client={queryClient}>
@@ -353,6 +355,7 @@ function ClerkAppRoutes() {
         <Route path="/" component={HomeRedirect} />
         <Route path="/sign-in/*?" component={SignInPage} />
         <Route path="/sign-up/*?" component={SignUpPage} />
+        <Route path="/sample-plate" component={SamplePlate} />
         <Route path="/privacy" component={PrivacyPage} />
         <Route path="/dashboard">
           <Show when="signed-in"><Layout><AnimatedRoute><Dashboard /></AnimatedRoute></Layout></Show>
@@ -460,10 +463,11 @@ function App() {
     <MotionConfig reducedMotion="user">
       <InteractionFeedback>
         {AUTH_CONFIG_MISSING ? (
-          <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false}>
+          <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>
             <WouterRouter base={basePath}>
               <Switch>
-                <Route path="/privacy" component={PrivacyPage} />
+                <Route path="/sample-plate" component={SamplePlate} />
+        <Route path="/privacy" component={PrivacyPage} />
                 <Route component={AuthConfigurationError} />
               </Switch>
             </WouterRouter>
@@ -471,7 +475,7 @@ function App() {
         ) : DEMO_MODE ? (
           <DemoApp />
         ) : (
-          <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false}>
+          <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>
             <TooltipProvider>
               <WouterRouter base={basePath}>
                 <ClerkApp />

@@ -31,12 +31,16 @@ import ExcelJS from "exceljs";
 import mammoth from "mammoth";
 import { logger } from "../lib/logger";
 import {
+  calculatePlateResults,
+  readPlateResults,
   parseDelimitedRows,
   parsePlateRows,
   previewRows,
   type PlateSelection,
   type WellData as ImportedWellData,
-} from "../lib/plateImport";
+} from "@workspace/plate-analysis";
+
+import { answerPlateQuestion, ConfirmPlateLayoutBody, narratePlate, storedPlateWells } from "../lib/plateAnalysis";
 
 const router: IRouter = Router();
 const MAX_WORKBOOK_ROWS = 512;
@@ -94,14 +98,20 @@ function excelCellValue(value: ExcelJS.CellValue): unknown {
   return clampCellString(String(value));
 }
 
-async function readFirstWorksheetRows(buffer: Buffer): Promise<unknown[][]> {
+async function readWorkbook(buffer: Buffer) {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
-  const sheet = workbook.worksheets[0];
-  if (!sheet) return [];
+  const cellCount = workbook.worksheets.reduce((sum, sheet) => sum + sheet.rowCount * sheet.columnCount, 0);
+  if (workbook.worksheets.length > 20 || cellCount > 160_000) {
+    throw new UploadInputError("Workbook is too large. Export the worksheets containing the plate measurements.", 413);
+  }
+  return workbook.worksheets;
+}
+
+function readWorksheetRows(sheet: ExcelJS.Worksheet): unknown[][] {
   if (sheet.rowCount > MAX_WORKBOOK_ROWS || sheet.columnCount > MAX_WORKBOOK_COLUMNS) {
     throw new UploadInputError(
-      `Workbook is too large. Maximum supported sheet size is ${MAX_WORKBOOK_ROWS} rows by ${MAX_WORKBOOK_COLUMNS} columns.`,
+      `Worksheet “${sheet.name}” exceeds the supported size of ${MAX_WORKBOOK_ROWS} rows by ${MAX_WORKBOOK_COLUMNS} columns.`,
       413,
     );
   }
@@ -118,9 +128,7 @@ async function readFirstWorksheetRows(buffer: Buffer): Promise<unknown[][]> {
   return rows;
 }
 
-async function readUploadedRows(buffer: Buffer, filename: string): Promise<unknown[][]> {
-  const ext = filename.split(".").pop()?.toLowerCase();
-  if (ext === "xlsx") return readFirstWorksheetRows(buffer);
+function readTextRows(buffer: Buffer, filename: string): unknown[][] {
   const rows = parseDelimitedRows(buffer.toString("utf-8"), filename);
   if (rows.length > MAX_TEXT_ROWS + 1) {
     throw new UploadInputError(`Text file has too many rows. Maximum supported row count is ${MAX_TEXT_ROWS}.`, 413);
@@ -129,6 +137,35 @@ async function readUploadedRows(buffer: Buffer, filename: string): Promise<unkno
     throw new UploadInputError(`Text file has too many columns. Maximum supported column count is ${MAX_TEXT_COLUMNS}.`, 413);
   }
   return rows;
+}
+
+async function resolvePlateUpload(
+  file: Buffer,
+  filename: string,
+  selection?: PlateSelection,
+  sheetName?: string,
+) {
+  const options = filename.toLowerCase().endsWith(".xlsx")
+    ? (await readWorkbook(file)).filter((sheet) => !sheetName || sheet.name === sheetName)
+      .map((sheet) => ({ name: sheet.name, rows: readWorksheetRows(sheet) }))
+    : [{ name: null, rows: readTextRows(file, filename) }];
+  const rowsWithPlates = options.map(({ name, rows }) => ({ name, rows, plate: parsePlateRows(rows, filename, selection) }));
+  const matches = rowsWithPlates.filter(({ plate }) => plate && plate.stats.well_count > 0);
+  const sheetChoices = matches.length ? matches : rowsWithPlates;
+  if (!sheetName && sheetChoices.length > 1) {
+    return { error: "Choose the worksheet containing the plate.", code: "PLATE_SHEET_CHOICE", sheets: sheetChoices.map(({ name }) => name) };
+  }
+  const match = matches[0];
+  if (match?.plate) return { plate: { ...match.plate, _type: "plate96" as const, sheet_name: match.name } };
+  const fallback = rowsWithPlates[0];
+  if (!fallback) return { error: "The selected worksheet could not be found.", code: "PLATE_SHEET_NOT_FOUND" };
+  if (!fallback.rows.length) return { error: "The plate file is empty.", code: "PLATE_EMPTY" };
+  return {
+    error: `Could not find a 96-well plate${fallback.name ? ` in “${fallback.name}”` : ""}. Select the grid or export a supported matrix or one-row-per-well table.`,
+    code: "PLATE_GRID_NOT_FOUND",
+    preview: previewRows(fallback.rows, 80, 40),
+    sheet_name: fallback.name,
+  };
 }
 
 function plateSelection(value: unknown): PlateSelection | undefined {
@@ -329,6 +366,77 @@ router.get("/experiments/:id", async (req, res) => {
   }
 });
 
+router.post("/experiments/plate-run", async (req, res) => {
+  const userId = getRequestUserId(req);
+  const body = requestBody(req.body);
+  const name = optionalString(body.file_name);
+  const content = optionalString(body.file_content_b64);
+  if (!name || !content) return res.status(400).json({ error: "Choose a plate file." });
+  try {
+    const parsed = await resolvePlateUpload(decodeUpload(content, name), name, plateSelection(body.plate_selection), optionalString(body.sheet_name) ?? undefined);
+    if (!parsed.plate) return res.status(422).json(parsed);
+    const result = parsed.plate;
+    const runName = name.replace(/\.[^.]+$/, "").trim() || "Plate run";
+    const experiment = await db.transaction(async (tx) => {
+      const [conversation] = await tx.insert(conversations).values({ title: `Copilot: ${runName}`, user_id: userId }).returning();
+      const [created] = await tx.insert(experiments).values({
+        user_id: userId,
+        name: runName,
+        date: new Date().toISOString().slice(0, 10),
+        assay_type: "Plate-reader assay",
+        instrument: result.metadata.instrument ?? "Generic",
+        status: "running",
+        file_name: name,
+        raw_data_json: JSON.stringify(result),
+        conversation_id: conversation.id,
+      }).returning();
+      return created;
+    });
+    return res.status(201).json(experiment);
+  } catch (err) {
+    if (err instanceof UploadInputError) return res.status(err.statusCode).json({ error: err.message });
+    req.log.error({ err }, "Could not create a plate run from the selected upload");
+    return res.status(422).json({ error: "We could not import this plate file. Check the export and try again." });
+  }
+});
+
+function samePlateVersion(exp: typeof experiments.$inferSelect) {
+  return and(
+    eq(experiments.id, exp.id),
+    eq(experiments.user_id, exp.user_id),
+    exp.raw_data_json === null ? isNull(experiments.raw_data_json) : eq(experiments.raw_data_json, exp.raw_data_json),
+    exp.plate_results_json === null ? isNull(experiments.plate_results_json) : eq(experiments.plate_results_json, exp.plate_results_json),
+  );
+}
+
+router.put("/experiments/:id/plate-layout", async (req, res) => {
+  const userId = getRequestUserId(req);
+  const body = ConfirmPlateLayoutBody.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Check the dose series range, concentration, and dilution factor." });
+  const exp = await findOwnedExperiment(Number(req.params.id), userId);
+  if (!exp) return res.status(404).json({ error: "Experiment not found" });
+  const wells = storedPlateWells(exp.raw_data_json);
+  if (!wells) return res.status(422).json({ error: "Upload a plate file before confirming its layout." });
+  if (exp.updated_at.toISOString() !== body.data.updatedAt) {
+    return res.status(409).json({ error: "This run has changed. Reload it and review the plate layout." });
+  }
+
+  const results = calculatePlateResults(wells, body.data.layout);
+  const [updated] = await db.update(experiments).set({
+    plate_results_json: JSON.stringify(results),
+    control_summary_json: null,
+    ai_summary: null,
+    ai_summary_request_id: null,
+    ai_next_experiments_json: null,
+    data_analysis_report: null,
+    data_analysis_request_id: null,
+    updated_at: new Date(),
+  }).where(samePlateVersion(exp)).returning();
+  return updated
+    ? res.json(updated)
+    : res.status(409).json({ error: "This run has changed. Reload it and review the plate layout." });
+});
+
 router.post("/experiments", async (req, res) => {
   try {
     const userId = getRequestUserId(req);
@@ -462,7 +570,14 @@ router.post("/experiments/:id/data", async (req, res) => {
     if (!exp) return res.status(404).json({ error: "Experiment not found" });
 
     const selection = plateSelection(body.plate_selection);
-    const rawDataJson = await parseFileContent(fileContentB64, fileName, selection);
+    let rawDataJson: string;
+    if (body.plate_only === true) {
+      const parsed = await resolvePlateUpload(decodeUpload(fileContentB64, fileName), fileName, selection, optionalString(body.sheet_name) ?? undefined);
+      if (!parsed.plate) return res.status(422).json(parsed);
+      rawDataJson = JSON.stringify(parsed.plate);
+    } else {
+      rawDataJson = await parseFileContent(fileContentB64, fileName, selection);
+    }
     // Guard against degenerate parses so we never overwrite good analysis with junk:
     // parseFileContent returns { error } for empty/too-short files, or a plate96 with
     // zero readings when no 8×12 grid was found. Reject both rather than attaching them.
@@ -506,6 +621,7 @@ router.post("/experiments/:id/data", async (req, res) => {
         raw_data_json: rawDataJson,
         file_name: fileName,
         control_summary_json: importedControls ? JSON.stringify(importedControls) : null,
+        plate_results_json: null,
         ai_summary: null,
         ai_summary_request_id: null,
         ai_next_experiments_json: null,
@@ -739,6 +855,23 @@ router.post("/experiments/:id/data-analysis", aiRateLimiter, aiDailyQuota, async
       if (rejectInputError(res, err)) return;
       throw err;
     }
+    if (storedPlateWells(exp.raw_data_json)) {
+      const result = readPlateResults(exp.plate_results_json);
+      if (!result) return res.status(409).json({ error: "Confirm the plate layout before requesting an AI reading." });
+      const focus = [notes, quantifyRequest, refineNote].filter(Boolean).join("\n");
+      const { summary, requestId } = await narratePlate(result, userId, id, focus);
+      const [saved] = await db.update(experiments).set({
+        data_analysis_report: summary,
+        data_analysis_request_id: requestId,
+        updated_at: new Date(),
+      }).where(samePlateVersion(exp)).returning({ id: experiments.id });
+      if (!saved) return res.status(409).json({ error: "The plate changed during analysis. Run it again." });
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.write(`data: ${JSON.stringify({ content: summary })}\n\n`);
+      return res.end(`data: ${JSON.stringify({ done: true, request_id: requestId })}\n\n`);
+    }
+
     // Mirrors the protocol design pattern: a prior report already existing means
     // this call is a refinement of it, not a fresh first-time analysis.
     const isRefine = !!exp.data_analysis_report;
@@ -883,6 +1016,24 @@ ${relatedContext}`;
 // numbers are always computed deterministically client-side from the real
 // plate data. Persists into the same conversation as the streaming chat, so
 // both surfaces show one continuous history.
+router.post("/experiments/:id/quantify", async (req, res, next) => {
+  const exp = await findOwnedExperiment(Number(req.params.id), getRequestUserId(req));
+  if (!exp) return res.status(404).json({ error: "Experiment not found" });
+  if (!storedPlateWells(exp.raw_data_json)) return next();
+  const question = optionalString(requestBody(req.body).question);
+  if (!question) return res.status(400).json({ error: "A question is required." });
+  if (question.length > 2000) return res.status(413).json({ error: "The question is too long." });
+  const result = readPlateResults(exp.plate_results_json);
+  return res.json({
+    answer: answerPlateQuestion(question, result),
+    chart: result?.fit && /\b(?:[ie]c\s*50|potency|hill|midpoint|fit|curve)\b/i.test(question)
+      ? { type: "dose_response", title: "Calculated dose-response", results: result }
+      : null,
+    conversation_id: exp.conversation_id,
+    request_id: null,
+  });
+});
+
 router.post("/experiments/:id/quantify", aiRateLimiter, aiDailyQuota, async (req, res) => {
   try {
     const userId = getRequestUserId(req);
@@ -1278,6 +1429,21 @@ router.post("/experiments/:id/analyze", aiRateLimiter, aiDailyQuota, async (req,
     if (!rows[0]) return res.status(404).json({ error: "Experiment not found" });
     const exp = rows[0];
 
+    if (storedPlateWells(exp.raw_data_json)) {
+      const result = readPlateResults(exp.plate_results_json);
+      if (!result) return res.status(409).json({ error: "Confirm the plate layout before requesting an AI reading." });
+      const focus = bodyParsed.focus_question ? assertMaxChars(bodyParsed.focus_question, "Focus question") : "";
+      const { summary, requestId } = await narratePlate(result, userId, id, focus);
+      const [saved] = await db.update(experiments).set({
+        ai_summary: summary,
+        ai_summary_request_id: requestId,
+        ai_next_experiments_json: null,
+        updated_at: new Date(),
+      }).where(samePlateVersion(exp)).returning({ id: experiments.id });
+      if (!saved) return res.status(409).json({ error: "The plate changed during analysis. Run it again." });
+      return res.json({ ai_summary: summary, suggestions: [], conversation_id: exp.conversation_id, request_id: requestId });
+    }
+
     // Fetch related experiments for context
     const related = await db
       .select()
@@ -1544,39 +1710,12 @@ router.post("/experiments/compare", aiRateLimiter, aiDailyQuota, async (req, res
 
 router.post(["/experiments/parse-plate", "/experiments/parse-synergy"], async (req, res) => {
   try {
-    const { file_content_b64, file_name, plate_selection } = req.body as {
-      file_content_b64: string;
-      file_name: string;
-      plate_selection?: unknown;
-    };
-
-    if (!file_content_b64 || !file_name) {
-      return res.status(400).json({ error: "file_content_b64 and file_name are required" });
-    }
-
-    const buffer = decodeUpload(file_content_b64, file_name);
-    const rows = await readUploadedRows(buffer, file_name);
-    if (!rows.length) {
-      req.log.warn(
-        { fileName: file_name, detectedRowCount: 0, statusCode: 422, retryExpected: false },
-        "The uploaded plate spreadsheet was readable but empty, so no measurements were returned. Export a worksheet containing the plate matrix before retrying.",
-      );
-      return res.status(422).json({ error: "This file is empty. Upload a populated plate-reader export." });
-    }
-
-    const result = parsePlateRows(rows, file_name, plateSelection(plate_selection));
-    if (!result || result.stats.well_count === 0) {
-      req.log.warn(
-        { fileName: file_name, detectedWellCount: 0, statusCode: 422, fallback: "manual_grid_picker", retryExpected: false },
-        "The uploaded plate file was readable but no 96-well grid was detected automatically, so a bounded table preview was returned for manual selection.",
-      );
-      return res.status(422).json({
-        error: "Couldn't find the plate automatically. Drag across the 8×12 plate block below.",
-        code: "PLATE_GRID_NOT_FOUND",
-        preview: previewRows(rows, 80, 40),
-      });
-    }
-    return res.json({ ...result, _type: "plate96" });
+    const body = requestBody(req.body);
+    const content = optionalString(body.file_content_b64);
+    const filename = optionalString(body.file_name);
+    if (!content || !filename) return res.status(400).json({ error: "file_content_b64 and file_name are required" });
+    const parsed = await resolvePlateUpload(decodeUpload(content, filename), filename, plateSelection(body.plate_selection), optionalString(body.sheet_name) ?? undefined);
+    return parsed.plate ? res.json(parsed.plate) : res.status(422).json(parsed);
   } catch (err) {
     if (err instanceof UploadInputError) {
       req.log.warn(
@@ -1785,7 +1924,8 @@ async function parseFileContent(b64: string, filename: string, selection?: Plate
     const ext = filename.split(".").pop()?.toLowerCase();
     const buffer = decodeUpload(b64, filename);
     if (ext === "xlsx") {
-      const rows = await readFirstWorksheetRows(buffer);
+      const [sheet] = await readWorkbook(buffer);
+      const rows = sheet ? readWorksheetRows(sheet) : [];
       if (!rows.length) {
         logger.warn(
           { fileName: filename, fileType: ext, detectedRowCount: 0, fallback: "return_parse_error", retryExpected: false },

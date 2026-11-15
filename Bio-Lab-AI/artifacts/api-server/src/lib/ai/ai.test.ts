@@ -51,6 +51,7 @@ test("experiment context preserves all 96 wells, protocol, and persisted control
     protocol_json: JSON.stringify({ objective: "test", materials: [], controls: ["vehicle"], plate_layout: "96 well", steps: [], expected_readout: "signal", suggested_analysis: "4PL", review_notes: [], changes_summary: [] }),
     file_name: "secret.xlsx",
     raw_data_json: JSON.stringify({ _type: "plate96", stats: { well_count: 96 }, wells, read_matrix: [] }),
+    plate_results_json: null,
     control_summary_json: JSON.stringify({ positive_control_wells: ["A1"], negative_control_wells: ["H12"] }),
     ai_summary: null,
     ai_summary_request_id: null,

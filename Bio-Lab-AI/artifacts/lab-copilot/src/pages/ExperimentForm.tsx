@@ -61,7 +61,7 @@ function normalizeTemplateStatus(value: string | null | undefined): CreateStatus
 const formSchema = z.object({
   name: z.string().min(2, "Name must be at least 2 characters"),
   date: z.string(),
-  assay_type: z.string().min(2, "Describe the scientific goal"),
+  assay_type: z.string(),
   instrument: z.string().default("Generic"),
   notes: z.string().optional(),
   status: z.enum(CREATE_STATUSES).default("designing"),
@@ -114,7 +114,7 @@ export function ExperimentForm() {
 
   const values = form.watch();
   const completeness = [values.name?.length >= 2, values.assay_type?.length >= 2, Boolean(values.date), Boolean(values.instrument), Boolean(values.notes)].filter(Boolean).length;
-  const canProceed = values.name?.length >= 2 && values.assay_type?.length >= 2;
+  const canProceed = values.name?.trim().length >= 2;
 
   function applyTemplate(id: string) {
     const template = templates?.find((item) => String(item.id) === id);
@@ -220,7 +220,7 @@ export function ExperimentForm() {
         </aside>
 
         <Form {...form}>
-          <form onSubmit={form.handleSubmit((submitted) => createMutation.mutate({ data: submitted }))} data-feedback-message="Saving the experiment into your lab memory">
+          <form onSubmit={form.handleSubmit((submitted) => createMutation.mutate({ data: { ...submitted, assay_type: submitted.assay_type.trim() || "Plate-reader assay" } }))} data-feedback-message="Saving the experiment into your lab memory">
             <AnimatePresence mode="wait">
               {step === 0 ? (
                 <motion.div key="compose" initial={{ opacity: 0, x: 20, filter: "blur(5px)" }} animate={{ opacity: 1, x: 0, filter: "blur(0px)" }} exit={{ opacity: 0, x: -14, filter: "blur(4px)" }} transition={{ duration: 0.38, ease: [0.16, 1, 0.3, 1] }}>
@@ -243,7 +243,7 @@ export function ExperimentForm() {
                       )} />
                       <FormField control={form.control} name="assay_type" render={({ field }) => (
                         <FormItem className="md:col-span-2">
-                          <FormLabel className="flex items-center gap-2"><Target className="h-3.5 w-3.5 text-primary" /> Scientific goal <span className="text-destructive">*</span></FormLabel>
+                          <FormLabel className="flex items-center gap-2"><Target className="h-3.5 w-3.5 text-primary" /> Scientific goal (optional)</FormLabel>
                           <FormControl><Textarea className="min-h-24 rounded-xl" placeholder="Estimate Compound-X IC50 in the MTT viability assay and identify the concentration range worth repeating." {...field} /></FormControl>
                           <p className="text-[10px] leading-4 text-muted-foreground">State what you want to learn—not only the assay name.</p>
                           <FormMessage />
@@ -275,7 +275,7 @@ export function ExperimentForm() {
                       )} />
                     </div>
                     <div className="mt-8 flex flex-col-reverse gap-3 border-t border-border/65 pt-5 sm:flex-row sm:items-center sm:justify-between">
-                      <p className="text-[10px] text-muted-foreground">Required: experiment name + scientific goal</p>
+                      <p className="text-[10px] text-muted-foreground">Required: experiment name</p>
                       <Button type="button" size="lg" className="gap-2 rounded-xl" disabled={!canProceed} onClick={() => setStep(1)} data-feedback="navigate" data-feedback-message="Reviewing the experiment before it becomes memory">
                         Review the record <ArrowRight className="h-4 w-4" />
                       </Button>

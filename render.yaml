@@ -4,7 +4,7 @@ services:
     runtime: node
     plan: free
     rootDir: Bio-Lab-AI
-    buildCommand: corepack enable && corepack prepare pnpm@11.9.0 --activate && pnpm install --frozen-lockfile && pnpm run typecheck && pnpm --filter @workspace/api-server run build
+    buildCommand: corepack enable && corepack prepare pnpm@11.9.0 --activate && pnpm install --frozen-lockfile && pnpm run typecheck && NODE_ENV=test DATABASE_URL=postgresql://test:test@127.0.0.1:1/biolab_test pnpm --filter @workspace/api-server test && pnpm --filter @workspace/api-server run build
     startCommand: node artifacts/api-server/dist/index.mjs
     healthCheckPath: /api/healthz
     autoDeployTrigger: checksPass
